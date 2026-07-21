@@ -134,7 +134,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Validate Groq Output\nconst apiResponse = $input.first().json;\nconst promptData = $('Prepare Groq Prompt').item.json;\nconst emails = promptData.emails;\n\nlet parsed;\ntry {\n  const content = apiResponse.choices[0].message.content;\n  parsed = JSON.parse(content);\n} catch (e) {\n  throw new Error('Groq returned invalid JSON');\n}\n\n// Rule 1: best_email must exist in emails_found\nconst bestEmail = parsed.best_email;\nif (bestEmail && !emails.find(e => e.email.toLowerCase() === bestEmail.toLowerCase())) {\n  parsed.manual_review = true;\n  parsed.reason = 'Groq hallucinated email: ' + bestEmail;\n  parsed.best_email = null;\n}\n\n// Rule 2: confidence\nconst conf = parsed.confidence || 0;\nif (conf < 0 || conf > 1) parsed.confidence = 0.5;\n\n// Rule 3: Classification logic\nlet finalStatus = 'NEEDS_REVIEW';\nif (parsed.manual_review) {\n  finalStatus = 'NEEDS_REVIEW';\n} else if (['GENERAL', 'RECEPTION', 'RESERVATION', 'UNKNOWN'].includes(parsed.email_type)) {\n  finalStatus = 'NEEDS_REVIEW';\n} else if (['HR', 'JOBS'].includes(parsed.email_type) && conf >= 0.85) {\n  finalStatus = 'READY_TO_SEND';\n}\n\n// Rule 4: Reject non-targets\nif (parsed.is_target_establishment === false) {\n  finalStatus = 'REJECTED';\n}\n\n// Update contacts list with decision\nconst results = emails.map(e => {\n  const isSelected = e.email.toLowerCase() === (parsed.best_email || '').toLowerCase();\n  return {\n    json: {\n      contact_id: e.contact_id,\n      hotel_id: e.hotel_id,\n      email: e.email,\n      email_type: isSelected ? parsed.email_type : e.email_type,\n      contact_name: isSelected ? parsed.contact_name : null,\n      contact_role: isSelected ? parsed.contact_role : null,\n      confidence: isSelected ? parsed.confidence : e.confidence,\n      preferred: isSelected,\n      review_status: isSelected ? finalStatus : 'REJECTED',\n      groq_reason: isSelected ? parsed.reason : 'Not selected'\n    }\n  };\n});\n\n// Add hotel update data\nconst hotelUpdate = {\n  hotel_id: promptData.hotel_id,\n  language_region: parsed.language_region,\n  accommodation: parsed.accommodation,\n  meals: parsed.meals,\n  manual_review: finalStatus === 'NEEDS_REVIEW' ? 'TRUE' : 'FALSE',\n  status: finalStatus === 'READY_TO_SEND' ? 'READY_TO_SEND' : \n         (finalStatus === 'NEEDS_REVIEW' ? 'NEEDS_REVIEW' : 'REJECTED')\n};\n\nreturn [{ json: { contacts: results.map(r => r.json), hotel: hotelUpdate } }];"
+        "jsCode": "// Validate Groq Output\nconst apiResponse = $input.first().json;\nconst promptData = $('Prepare Groq Prompt').item.json;\nconst emails = promptData.emails;\n\nlet parsed;\ntry {\n  const content = apiResponse.choices[0].message.content;\n  parsed = JSON.parse(content);\n} catch (e) {\n  throw new Error('Groq returned invalid JSON');\n}\n\n// Rule 1: best_email must exist in emails_found\nconst bestEmail = parsed.best_email;\nif (bestEmail && !emails.find(e => e.email.toLowerCase() === bestEmail.toLowerCase())) {\n  parsed.manual_review = true;\n  parsed.reason = 'Groq hallucinated email: ' + bestEmail;\n  parsed.best_email = null;\n}\n\n// Rule 2: confidence\nconst conf = parsed.confidence || 0;\nif (conf < 0 || conf > 1) parsed.confidence = 0.5;\n\n// Rule 3: Classification logic\nlet finalStatus = 'NEEDS_REVIEW';\nif (parsed.manual_review) {\n  finalStatus = 'NEEDS_REVIEW';\n} else if (['GENERAL', 'RECEPTION', 'RESERVATION', 'UNKNOWN'].includes(parsed.email_type)) {\n  finalStatus = 'NEEDS_REVIEW';\n} else if (['HR', 'JOBS'].includes(parsed.email_type) && conf >= 0.85) {\n  finalStatus = 'READY_TO_SEND';\n}\n\n// Rule 4: Reject non-targets\nif (parsed.is_target_establishment === false) {\n  finalStatus = 'REJECTED';\n}\n\n// Update contacts list with decision\nconst results = emails.map(e => {\n  const isSelected = e.email.toLowerCase() === (parsed.best_email || '').toLowerCase();\n  return {\n    json: {\n      contact_id: e.contact_id,\n      hotel_id: e.hotel_id,\n      email: e.email,\n      email_type: isSelected ? parsed.email_type : e.email_type,\n      contact_name: isSelected ? parsed.contact_name : null,\n      contact_role: isSelected ? parsed.contact_role : null,\n      confidence: isSelected ? parsed.confidence : e.confidence,\n      preferred: isSelected,\n      review_status: isSelected ? finalStatus : 'REJECTED',\n      groq_reason: isSelected ? parsed.reason : 'Not selected'\n    }\n  };\n});\n\n// Add hotel update data\nconst hotelUpdate = {\n  hotel_id: promptData.hotel_id,\n  language_region: parsed.language_region,\n  accommodation: parsed.accommodation,\n  meals: parsed.meals,\n  manual_review: finalStatus === 'NEEDS_REVIEW' ? 'TRUE' : 'FALSE',\n  status: finalStatus === 'READY_TO_SEND' ? 'READY_TO_SEND' : \n         (finalStatus === 'NEEDS_REVIEW' ? 'NEEDS_REVIEW' : 'REJECTED'),\n  contacts: results.map(r => r.json)\n};\n\nreturn [{ json: hotelUpdate }];"
       },
       "id": "validate-output",
       "name": "Validate Output",
@@ -156,15 +156,7 @@
           "value": "HOTELS"
         },
         "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "hotel_id": "={{ $json.hotel.hotel_id }}",
-            "language_region": "={{ $json.hotel.language_region }}",
-            "accommodation": "={{ $json.hotel.accommodation }}",
-            "meals": "={{ $json.hotel.meals }}",
-            "manual_review": "={{ $json.hotel.manual_review }}",
-            "status": "={{ $json.hotel.status }}"
-          },
+          "mappingMode": "autoMapInputData",
           "matchingColumns": [
             "hotel_id"
           ]
@@ -207,16 +199,7 @@
           "value": "CONTACTS"
         },
         "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "contact_id": "={{ $json.contact_id }}",
-            "email_type": "={{ $json.email_type }}",
-            "contact_name": "={{ $json.contact_name }}",
-            "contact_role": "={{ $json.contact_role }}",
-            "confidence": "={{ $json.confidence }}",
-            "preferred": "={{ $json.preferred }}",
-            "review_status": "={{ $json.review_status }}"
-          },
+          "mappingMode": "autoMapInputData",
           "matchingColumns": [
             "contact_id"
           ]
