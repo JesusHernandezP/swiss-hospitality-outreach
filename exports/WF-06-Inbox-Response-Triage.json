@@ -113,10 +113,9 @@
     },
     {
       "parameters": {
+        "operation": "addLabels",
         "messageId": "={{ $('Prepare Groq').item.json.message_id }}",
-        "labels": [
-          "UNREAD"
-        ]
+        "labelIds": []
       },
       "id": "mark-read",
       "name": "Mark as Read",
