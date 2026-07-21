@@ -164,7 +164,10 @@
             "meals": "={{ $json.hotel.meals }}",
             "manual_review": "={{ $json.hotel.manual_review }}",
             "status": "={{ $json.hotel.status }}"
-          }
+          },
+          "matchingColumns": [
+            "hotel_id"
+          ]
         },
         "options": {}
       },
@@ -213,7 +216,10 @@
             "confidence": "={{ $json.confidence }}",
             "preferred": "={{ $json.preferred }}",
             "review_status": "={{ $json.review_status }}"
-          }
+          },
+          "matchingColumns": [
+            "contact_id"
+          ]
         },
         "options": {}
       },
