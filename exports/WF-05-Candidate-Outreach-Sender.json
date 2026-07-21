@@ -1,0 +1,662 @@
+{
+  "name": "WF-05 Candidate Outreach Sender",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/20 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst estTime = new Date(now.toLocaleString('en-US', { timeZone: $env.TIMEZONE || 'Europe/Madrid' }));\nconst hour = estTime.getHours();\nconst minute = estTime.getMinutes();\nconst timeNum = hour + (minute / 60);\n\nconst startStr = $env.SEND_WINDOW_START || '08:30';\nconst endStr = $env.SEND_WINDOW_END || '18:30';\n\nconst startNum = parseInt(startStr.split(':')[0]) + (parseInt(startStr.split(':')[1] || 0) / 60);\nconst endNum = parseInt(endStr.split(':')[0]) + (parseInt(endStr.split(':')[1] || 0) / 60);\n\n// Check if enabled\nconst enabled = String($env.OUTREACH_ENABLED).toLowerCase() === 'true';\nconst dryRun = String($env.DRY_RUN).toLowerCase() === 'true';\n\n// Day of week (0=Sun, 6=Sat)\nconst day = estTime.getDay();\nconst isWeekend = day === 0 || day === 6;\n\n// Logic for window\nconst inWindow = timeNum >= startNum && timeNum <= endNum && !isWeekend;\n\nreturn [{\n  json: {\n    can_send: enabled && inWindow,\n    dry_run: dryRun,\n    reason: !enabled ? 'Outreach Disabled' : (!inWindow ? 'Out of sending window or weekend' : 'OK')\n  }\n}];"
+      },
+      "id": "check-conditions",
+      "name": "Check Conditions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-enabled",
+              "leftValue": "={{ $json.can_send }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-can-send",
+      "name": "If Can Send",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "EVENTS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "event_type",
+              "lookupValue": "EMAIL_SENT"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "count-sent-today",
+      "name": "Count Sent Today",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [900, 280],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const maxDaily = parseInt($env.MAX_DAILY_SENDS || '30', 10);\nconst today = new Date().toISOString().split('T')[0];\nconst events = $input.all().map(i => i.json);\n\nconst sentToday = events.filter(e => e.timestamp && e.timestamp.startsWith(today)).length;\n\nif (sentToday >= maxDaily) {\n  return [{ json: { proceed: false, reason: `Max daily sends reached (${sentToday}/${maxDaily})` } }];\n}\n\nreturn [{ json: { proceed: true, remaining: maxDaily - sentToday } }];"
+      },
+      "id": "check-limits",
+      "name": "Check Limits",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 280]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "can-proceed",
+              "leftValue": "={{ $json.proceed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-under-limit",
+      "name": "If Under Limit",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1340, 280]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "review_status",
+              "lookupValue": "READY_TO_SEND"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-ready-contacts",
+      "name": "Get Ready Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1560, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (items.length === 0) return [];\n\n// We only send ONE email per execution to spread them out.\nconst target = items[0].json;\nconst dryRun = $('Check Conditions').first().json.dry_run;\n\n// We need to fetch hotel details too, so we pass the hotel_id\nreturn [{\n  json: {\n    contact: target,\n    dry_run: dryRun\n  }\n}];"
+      },
+      "id": "pick-one-contact",
+      "name": "Pick One Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 260]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "hotel_id",
+              "lookupValue": "={{ $json.contact.hotel_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-hotel-data",
+      "name": "Get Hotel Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2000, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_DRIVE_CV_FILE_ID }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "download-cv",
+      "name": "Download CV",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2220, 260],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Drive OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_DRIVE_MOTIVATION_FILE_ID }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "download-motivation",
+      "name": "Download Motivation",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2440, 260],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Drive OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const contactData = $('Pick One Contact').first().json;\nconst hotelData = $('Get Hotel Data').first().json;\nconst hotelName = hotelData.hotel_name || '';\n\n// Determine salutation\nlet salutation = 'Sehr geehrte Damen und Herren';\nif (contactData.contact && contactData.contact.contact_name) {\n  const name = contactData.contact.contact_name;\n  if (contactData.contact.gender === 'F' || name.toLowerCase().includes('frau')) {\n    salutation = `Sehr geehrte Frau ${name}`;\n  } else if (contactData.contact.gender === 'M' || name.toLowerCase().includes('herr')) {\n    salutation = `Sehr geehrter Herr ${name}`;\n  }\n}\n\nconst subject = 'Interesse an einer Tätigkeit als Koch / Küchenmitarbeiter';\n\nconst body = `${salutation}\n\nderzeit bin ich auf der Suche nach einer Stelle als Koch oder Küchenmitarbeiter in der Schweiz.\n\nIch verfüge über praktische Erfahrung in internationalen Hotel- und Restaurantküchen. Zu meinen bisherigen Aufgaben gehören Mise en Place, warme und kalte Küche, Grill, Plancha, Fritteuse, Frühstück, Buffet, Room Service, Bankett sowie die Mitarbeit während arbeitsintensiver Servicezeiten. Ich kann mich rasch auf unterschiedliche Posten und Arbeitsabläufe einstellen, arbeite sauber und organisiert und unterstütze das Team dort, wo es im täglichen Küchenbetrieb notwendig ist.\n\nBesonders interessiert mich die Möglichkeit, in der Schweiz zu leben und zu arbeiten, das alpine Umfeld kennenzulernen und entweder während einer ganzen Saison oder längerfristig in einem Betrieb tätig zu sein.\n\nZurzeit wohne ich in Madrid. Ich bin spanischer Staatsbürger und EU/EFTA-Bürger und stehe für einen kurzfristigen Umzug in die Schweiz zur Verfügung. Spanisch ist meine Muttersprache, Englisch spreche ich auf B2-Niveau und Deutsch lerne ich derzeit auf A1-Niveau.\n\nIch interessiere mich sowohl für Saisonstellen als auch für Festanstellungen, vorzugsweise in einem Betrieb, der eine Mitarbeiterunterkunft und Verpflegungsmöglichkeiten anbietet.\n\nFalls Sie aktuell eine passende Stelle frei haben oder in den kommenden Monaten Verstärkung für Ihre Küche suchen, würde ich mich freuen, wenn Sie mein Profil berücksichtigen und mit mir Kontakt aufnehmen. Meinen Lebenslauf und mein Motivationsschreiben finden Sie im Anhang.\n\nFreundliche Grüsse\n\nJesus Hernandez\n+34 666 056 214\nhernandezpacheco2805@gmail.com`;\n\nreturn [{\n  json: {\n    contact_id: contactData.contact.contact_id,\n    hotel_id: hotelData.hotel_id,\n    to_email: contactData.contact.email,\n    subject: subject,\n    body: body,\n    dry_run: contactData.dry_run\n  }\n}];"
+      },
+      "id": "prepare-email",
+      "name": "Prepare Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-dry-run",
+              "leftValue": "={{ $json.dry_run }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-dry-run",
+      "name": "If DRY_RUN",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2880, 260]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.body }}",
+        "appendAttribution": false,
+        "attachments": "data,data1",
+        "options": {}
+      },
+      "id": "send-gmail",
+      "name": "Send Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [3100, 360],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "PLACEHOLDER",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log(`DRY_RUN: Would have sent email to ${$json.to_email}`);\nreturn [{ \n  json: {\n    contact_id: $json.contact_id,\n    hotel_id: $json.hotel_id,\n    message_id: 'dry-run-' + Date.now()\n  } \n}];"
+      },
+      "id": "mock-send",
+      "name": "Mock Send",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst isDryRun = $('If DRY_RUN').first().json.dry_run;\nlet messageId = data.message_id || data.id || 'unknown';\n\nconst now = new Date().toISOString();\n\nconst event = {\n  event_id: 'evt-' + Date.now(),\n  timestamp: now,\n  workflow: 'WF-05 Outreach Sender',\n  entity_type: 'CONTACT',\n  entity_id: data.contact_id || $('Prepare Email').first().json.contact_id,\n  event_type: 'EMAIL_SENT',\n  details_json: JSON.stringify({ message_id: messageId, dry_run: isDryRun })\n};\n\nreturn [{ json: event }];"
+      },
+      "id": "prepare-log",
+      "name": "Prepare Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3340, 260]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "EVENTS"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "log-event",
+      "name": "Log Event",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3560, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "contact_id": "={{ $('Prepare Email').item.json.contact_id }}",
+            "review_status": "SENT"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-contact-status",
+      "name": "Update Contact Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3780, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "hotel_id": "={{ $('Prepare Email').item.json.hotel_id }}",
+            "status": "SENT"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-hotel-status",
+      "name": "Update Hotel Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4000, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WF-05 Candidate Outreach Sender\n\n**Trigger:** Every 20 minutes\n\n**Flow:**\n1. Check `OUTREACH_ENABLED` and Window hours (e.g. 08:30 - 18:30, Monday-Friday)\n2. Check max daily sends (from EVENTS sheet)\n3. Pick exactly ONE contact in `READY_TO_SEND` state (to spread them out)\n4. Fetch Hotel data and PDFs from Drive\n5. If `DRY_RUN=true`, skip actual Gmail sending\n6. Send via Gmail with 2 PDF attachments\n7. Log to EVENTS sheet\n8. Update CONTACT and HOTEL status to `SENT`",
+        "width": 380,
+        "height": 300
+      },
+      "id": "note-sender",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 520]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Conditions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Conditions": {
+      "main": [
+        [
+          {
+            "node": "If Can Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Can Send": {
+      "main": [
+        [
+          {
+            "node": "Count Sent Today",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Sent Today": {
+      "main": [
+        [
+          {
+            "node": "Check Limits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Limits": {
+      "main": [
+        [
+          {
+            "node": "If Under Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Under Limit": {
+      "main": [
+        [
+          {
+            "node": "Get Ready Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Ready Contacts": {
+      "main": [
+        [
+          {
+            "node": "Pick One Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick One Contact": {
+      "main": [
+        [
+          {
+            "node": "Get Hotel Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Hotel Data": {
+      "main": [
+        [
+          {
+            "node": "Download CV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download CV": {
+      "main": [
+        [
+          {
+            "node": "Download Motivation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Motivation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email": {
+      "main": [
+        [
+          {
+            "node": "If DRY_RUN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If DRY_RUN": {
+      "main": [
+        [
+          {
+            "node": "Mock Send",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Gmail": {
+      "main": [
+        [
+          {
+            "node": "Prepare Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Send": {
+      "main": [
+        [
+          {
+            "node": "Prepare Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Log": {
+      "main": [
+        [
+          {
+            "node": "Log Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Event": {
+      "main": [
+        [
+          {
+            "node": "Update Contact Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Contact Status": {
+      "main": [
+        [
+          {
+            "node": "Update Hotel Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": []
+}

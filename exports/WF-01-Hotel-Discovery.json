@@ -1,0 +1,466 @@
+{
+  "name": "WF-01 Hotel Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 500]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "SEARCH_QUERIES"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupValue": "TRUE",
+              "lookupColumn": "enabled"
+            }
+          ]
+        }
+      },
+      "id": "read-search-queries",
+      "name": "Read Search Queries",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [500, 400],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Apify Google Maps Scraper input\n// Process each search query into an Apify-compatible format\nconst queries = $input.all().map(item => item.json);\n\n// Filter enabled queries\nconst enabledQueries = queries.filter(q => \n  q.enabled === 'TRUE' || q.enabled === true || q.enabled === 'true'\n);\n\nif (enabledQueries.length === 0) {\n  throw new Error('No enabled search queries found in SEARCH_QUERIES sheet');\n}\n\n// Build search terms for Google Maps\nconst searchTerms = enabledQueries.map(q => {\n  const region = q.region ? `, ${q.region}` : '';\n  return `${q.query}${region}, Switzerland`;\n});\n\nreturn [{\n  json: {\n    searchTerms: searchTerms,\n    queries: enabledQueries,\n    totalQueries: enabledQueries.length\n  }\n}];"
+      },
+      "id": "prepare-apify-input",
+      "name": "Prepare Apify Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 400]
+    },
+    {
+      "parameters": {
+        "url": "https://api.apify.com/v2/acts/compass~crawler-google-places/runs",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "apifyApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"searchStringsArray\": {{ JSON.stringify($json.searchTerms) }},\n  \"maxCrawledPlacesPerSearch\": 50,\n  \"language\": \"de\",\n  \"countryCode\": \"ch\",\n  \"categoryFilterWords\": [\"hotel\", \"resort\", \"gasthof\", \"berghotel\", \"wellness\"],\n  \"includeWebResults\": false,\n  \"maxImages\": 0,\n  \"maxReviews\": 0,\n  \"scrapeContacts\": true,\n  \"scrapeTableReservation\": false\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "run-apify-scraper",
+      "name": "Run Apify Google Maps Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [940, 400],
+      "credentials": {
+        "apifyApi": {
+          "id": "PLACEHOLDER",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/acts/compass~crawler-google-places/runs/{{ $json.data.id }}/dataset/items",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "apifyApi",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "wait-and-fetch-results",
+      "name": "Fetch Apify Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1160, 400],
+      "credentials": {
+        "apifyApi": {
+          "id": "PLACEHOLDER",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Apify Google Maps results into our HOTELS schema\nconst results = $input.all();\nconst hotels = [];\nconst rejected = [];\nconst now = new Date().toISOString();\n\nfunction normalizeDomain(url) {\n  if (!url) return null;\n  try {\n    let hostname = new URL(url).hostname.toLowerCase();\n    hostname = hostname.replace(/^www\\./, '');\n    return hostname;\n  } catch {\n    return null;\n  }\n}\n\nfunction normalizeHotelName(name) {\n  if (!name) return null;\n  return name\n    .toLowerCase()\n    .replace(/[^a-z0-9äöüàâéèêëïîôùûüÿç\\s]/g, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction generateId() {\n  const ts = Date.now().toString(36);\n  const rand = Math.random().toString(36).slice(2, 8);\n  return `htl-${ts}-${rand}`;\n}\n\n// Irrelevant categories to reject\nconst rejectPatterns = [\n  'apartment', 'ferienwohnung', 'holiday home', 'vacation rental',\n  'camping', 'campingplatz', 'hostel', 'jugendherberge',\n  'bed and breakfast', 'b&b', 'airbnb', 'privatzimmer',\n  'immobilien', 'real estate', 'travel agency', 'reisebüro'\n];\n\nfor (const result of results) {\n  const item = result.json;\n  \n  // Skip if not in Switzerland\n  const address = (item.address || '').toLowerCase();\n  const country = (item.countryCode || '').toUpperCase();\n  if (country && country !== 'CH') {\n    continue;\n  }\n  // Additional CH check from address\n  if (!country && !address.includes('schweiz') && !address.includes('switzerland') && !address.includes('suisse') && !address.includes(', ch')) {\n    // Try to infer from location\n    const loc = (item.location || item.city || '').toLowerCase();\n    if (!loc) continue;\n  }\n  \n  const name = item.title || item.name || '';\n  const normalizedName = normalizeHotelName(name);\n  \n  // Check for irrelevant listings\n  const category = (item.categoryName || item.category || '').toLowerCase();\n  const isIrrelevant = rejectPatterns.some(p => \n    category.includes(p) || name.toLowerCase().includes(p)\n  );\n  \n  if (isIrrelevant) {\n    rejected.push({ name, reason: 'Irrelevant category: ' + category });\n    continue;\n  }\n  \n  // Extract website\n  const website = item.website || item.url || null;\n  const normalizedDomain = normalizeDomain(website);\n  \n  // Determine hotel type\n  let hotelType = 'HOTEL';\n  const nameLower = name.toLowerCase();\n  if (nameLower.includes('resort')) hotelType = 'RESORT';\n  else if (nameLower.includes('berghotel') || nameLower.includes('berghaus')) hotelType = 'BERGHOTEL';\n  else if (nameLower.includes('gasthof') || nameLower.includes('gasthaus')) hotelType = 'GASTHOF';\n  else if (nameLower.includes('wellness')) hotelType = 'RESORT';\n  \n  // Extract location info\n  const town = item.city || item.neighborhood || '';\n  const canton = item.state || '';\n  \n  hotels.push({\n    hotel_id: generateId(),\n    hotel_name: name,\n    normalized_name: normalizedName,\n    town: town,\n    canton: canton,\n    country: 'CH',\n    language_region: 'DE',\n    hotel_type: hotelType,\n    stars: item.totalScore || '',\n    website: website || '',\n    normalized_domain: normalizedDomain || '',\n    source_url: item.url || item.searchPageUrl || '',\n    career_url: '',\n    contact_url: '',\n    accommodation: 'UNKNOWN',\n    meals: 'UNKNOWN',\n    active_vacancy: 'UNKNOWN',\n    status: website ? 'DISCOVERED' : 'SCRAPE_PENDING',\n    priority: 'MEDIUM',\n    manual_review: website ? 'FALSE' : 'TRUE',\n    created_at: now,\n    updated_at: now,\n    last_error: ''\n  });\n}\n\nreturn [{\n  json: {\n    hotels: hotels,\n    rejected: rejected,\n    total_found: results.length,\n    total_valid: hotels.length,\n    total_rejected: rejected.length\n  }\n}];"
+      },
+      "id": "normalize-results",
+      "name": "Normalize Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 400]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "options": {}
+      },
+      "id": "read-existing-hotels",
+      "name": "Read Existing Hotels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1380, 600],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate new hotels against existing ones\nconst normalizedData = $('Normalize Results').first().json;\nconst existingItems = $('Read Existing Hotels').all();\n\n// Build sets of existing identifiers\nconst existingDomains = new Set();\nconst existingNames = new Set();\n\nfor (const item of existingItems) {\n  const row = item.json;\n  if (row.normalized_domain) {\n    existingDomains.add(row.normalized_domain.toLowerCase());\n  }\n  const nameKey = `${(row.normalized_name || '').toLowerCase()}|${(row.town || '').toLowerCase()}`;\n  if (row.normalized_name) {\n    existingNames.add(nameKey);\n  }\n}\n\n// Also deduplicate within the new batch\nconst seenDomains = new Set();\nconst seenNames = new Set();\nconst newHotels = [];\nconst duplicates = [];\n\nfor (const hotel of normalizedData.hotels) {\n  const domain = (hotel.normalized_domain || '').toLowerCase();\n  const nameKey = `${(hotel.normalized_name || '').toLowerCase()}|${(hotel.town || '').toLowerCase()}`;\n  \n  // Check against existing\n  if (domain && existingDomains.has(domain)) {\n    duplicates.push({ name: hotel.hotel_name, reason: 'Domain exists: ' + domain });\n    continue;\n  }\n  if (existingNames.has(nameKey)) {\n    duplicates.push({ name: hotel.hotel_name, reason: 'Name+town exists' });\n    continue;\n  }\n  \n  // Check within batch\n  if (domain && seenDomains.has(domain)) {\n    duplicates.push({ name: hotel.hotel_name, reason: 'Duplicate in batch: ' + domain });\n    continue;\n  }\n  if (seenNames.has(nameKey)) {\n    duplicates.push({ name: hotel.hotel_name, reason: 'Name duplicate in batch' });\n    continue;\n  }\n  \n  if (domain) seenDomains.add(domain);\n  seenNames.add(nameKey);\n  newHotels.push(hotel);\n}\n\nreturn [{\n  json: {\n    new_hotels: newHotels,\n    duplicates: duplicates,\n    total_new: newHotels.length,\n    total_duplicates: duplicates.length,\n    total_existing: existingItems.length\n  }\n}];"
+      },
+      "id": "deduplicate-hotels",
+      "name": "Deduplicate Hotels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-new-hotels",
+              "leftValue": "={{ $json.total_new }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "has-new-hotels",
+      "name": "Has New Hotels?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1820, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split new hotels into individual items for Google Sheets append\nconst data = $input.first().json;\nconst hotels = data.new_hotels;\n\nreturn hotels.map(hotel => ({ json: hotel }));"
+      },
+      "id": "split-hotels",
+      "name": "Split Into Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2040, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "insert-new-hotels",
+      "name": "Insert New Hotels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2260, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create discovery event for logging\nconst dedupeData = $('Deduplicate Hotels').first().json;\nconst now = new Date().toISOString();\n\nconst event = {\n  event_id: now.replace(/[^0-9]/g, '').slice(0, 17) + '-' + Math.random().toString(36).slice(2, 8),\n  timestamp: now,\n  workflow: 'WF-01 Hotel Discovery',\n  entity_type: 'BATCH',\n  entity_id: 'discovery-' + now.slice(0, 10),\n  event_type: 'DISCOVERY_COMPLETE',\n  details_json: JSON.stringify({\n    total_new: dedupeData.total_new,\n    total_duplicates: dedupeData.total_duplicates,\n    total_existing_before: dedupeData.total_existing,\n    duplicates_list: dedupeData.duplicates.slice(0, 20)\n  })\n};\n\nreturn [{ json: event }];"
+      },
+      "id": "prepare-event-log",
+      "name": "Prepare Event Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2480, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "EVENTS"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "log-discovery-event",
+      "name": "Log Discovery Event",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2700, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log summary when no new hotels found\nconst data = $input.first().json;\nconsole.log(`Discovery complete: ${data.total_duplicates} duplicates found, 0 new hotels.`);\nreturn [{ json: { message: 'No new hotels to insert', duplicates: data.total_duplicates } }];"
+      },
+      "id": "no-new-hotels",
+      "name": "Log No New Hotels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2040, 500]
+    },
+    {
+      "parameters": {
+        "content": "## WF-01 Hotel Discovery\n\n**Trigger:** Manual or daily at 07:00\n\n**Flow:**\n1. Read enabled queries from SEARCH_QUERIES\n2. Run Apify Google Maps Scraper\n3. Normalize results (name, domain, location)\n4. Filter: only Switzerland (CH)\n5. Reject irrelevant listings (apartments, camping, etc.)\n6. Deduplicate against existing HOTELS\n7. Insert only new hotels\n8. Log discovery event to EVENTS\n\n**Deduplication keys:**\n- normalized_domain\n- normalized_name + town\n\n**Initial queries:** 18 Swiss-German tourist locations\n**Safety:** DRY_RUN has no effect here (discovery is safe).",
+        "width": 450,
+        "height": 380
+      },
+      "id": "note-discovery",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 660]
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Read Search Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Search Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Search Queries": {
+      "main": [
+        [
+          {
+            "node": "Prepare Apify Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Apify Input": {
+      "main": [
+        [
+          {
+            "node": "Run Apify Google Maps Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Apify Google Maps Scraper": {
+      "main": [
+        [
+          {
+            "node": "Fetch Apify Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Apify Results": {
+      "main": [
+        [
+          {
+            "node": "Normalize Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Existing Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Results": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Existing Hotels": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicate Hotels": {
+      "main": [
+        [
+          {
+            "node": "Has New Hotels?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has New Hotels?": {
+      "main": [
+        [
+          {
+            "node": "Split Into Items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No New Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Items": {
+      "main": [
+        [
+          {
+            "node": "Insert New Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert New Hotels": {
+      "main": [
+        [
+          {
+            "node": "Prepare Event Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Event Log": {
+      "main": [
+        [
+          {
+            "node": "Log Discovery Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "swiss-outreach"
+    },
+    {
+      "name": "discovery"
+    }
+  ]
+}

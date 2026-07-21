@@ -1,0 +1,184 @@
+{
+  "name": "WF-99 Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "On Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF-99 Error Handler — Extract error details\nconst errorData = $input.all();\nconst item = errorData[0].json;\n\n// Extract error information from the error trigger\nconst execution = item.execution || {};\nconst workflow = item.workflow || {};\n\nconst errorEvent = {\n  event_id: $now.toISO().replace(/[^0-9]/g, '').slice(0, 17) + '-' + Math.random().toString(36).slice(2, 8),\n  timestamp: $now.toISO(),\n  workflow: workflow.name || 'UNKNOWN',\n  entity_type: 'WORKFLOW_ERROR',\n  entity_id: execution.id || 'UNKNOWN',\n  event_type: 'ERROR',\n  details_json: JSON.stringify({\n    workflow_id: workflow.id || null,\n    workflow_name: workflow.name || null,\n    execution_id: execution.id || null,\n    error_message: execution.error?.message || item.error?.message || 'Unknown error',\n    error_node: execution.lastNodeExecuted || null,\n    error_stack: (execution.error?.stack || item.error?.stack || '').slice(0, 500),\n    mode: execution.mode || null,\n    retryOf: execution.retryOf || null\n  })\n};\n\n// Determine if this is a critical error that needs alerting\nconst criticalPatterns = [\n  'gmail', 'quota', 'attachment', 'groq', 'sheets', 'bounce',\n  'rate limit', 'authentication', 'unauthorized', '429', '403'\n];\nconst errorMsg = (execution.error?.message || item.error?.message || '').toLowerCase();\nconst isCritical = criticalPatterns.some(p => errorMsg.includes(p));\n\nreturn [{\n  json: {\n    ...errorEvent,\n    is_critical: isCritical,\n    alert_message: isCritical \n      ? `⚠️ CRITICAL ERROR in ${workflow.name || 'unknown workflow'}: ${execution.error?.message || 'Unknown'}` \n      : null\n  }\n}];"
+      },
+      "id": "extract-error-details",
+      "name": "Extract Error Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "EVENTS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_id": "={{ $json.event_id }}",
+            "timestamp": "={{ $json.timestamp }}",
+            "workflow": "={{ $json.workflow }}",
+            "entity_type": "={{ $json.entity_type }}",
+            "entity_id": "={{ $json.entity_id }}",
+            "event_type": "={{ $json.event_type }}",
+            "details_json": "={{ $json.details_json }}"
+          }
+        }
+      },
+      "id": "log-error-to-events",
+      "name": "Log Error to EVENTS",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [680, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "critical-check",
+              "leftValue": "={{ $json.is_critical }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "is-critical-error",
+      "name": "Is Critical Error?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// For critical errors, prepare alert notification\n// In production this could send an email or Telegram message\n// For now, we log it prominently\nconst item = $input.first().json;\n\nconsole.log('=== CRITICAL ERROR ALERT ===');\nconsole.log(item.alert_message);\nconsole.log('Details:', item.details_json);\nconsole.log('===========================');\n\nreturn [{\n  json: {\n    alert_sent: true,\n    alert_message: item.alert_message,\n    timestamp: item.timestamp,\n    workflow: item.workflow\n  }\n}];"
+      },
+      "id": "send-critical-alert",
+      "name": "Log Critical Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {},
+      "id": "non-critical-end",
+      "name": "Non-Critical End",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "content": "## WF-99 Error Handler\n\n**Purpose:** Global error handler for all workflows.\n\nCaptures workflow errors, logs them to the EVENTS sheet,\nand alerts on critical failures (Gmail, Groq, Sheets, quotas, bounces).\n\n**Config:**\n- Set this workflow as the Error Workflow in each WF's settings.\n- Requires Google Sheets credential with access to the master spreadsheet.\n\n**Critical patterns:** gmail, quota, attachment, groq, sheets, bounce, rate limit, auth errors.",
+        "width": 400,
+        "height": 300
+      },
+      "id": "note-error-handler",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 500]
+    }
+  ],
+  "connections": {
+    "On Error": {
+      "main": [
+        [
+          {
+            "node": "Extract Error Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Error Details": {
+      "main": [
+        [
+          {
+            "node": "Log Error to EVENTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error to EVENTS": {
+      "main": [
+        [
+          {
+            "node": "Is Critical Error?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Critical Error?": {
+      "main": [
+        [
+          {
+            "node": "Log Critical Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Non-Critical End",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "swiss-outreach"
+    },
+    {
+      "name": "error-handler"
+    }
+  ]
+}

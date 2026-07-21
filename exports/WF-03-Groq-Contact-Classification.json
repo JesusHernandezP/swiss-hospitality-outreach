@@ -1,0 +1,350 @@
+{
+  "name": "WF-03 Groq Contact Classification",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "review_status",
+              "lookupValue": "NEEDS_REVIEW"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-unclassified-contacts",
+      "name": "Get Unclassified Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [460, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Group contacts by hotel_id to process them together\nconst contacts = $input.all().map(i => i.json);\nif (contacts.length === 0) return [];\n\nconst hotelGroups = {};\nfor (const contact of contacts) {\n  const hId = contact.hotel_id;\n  if (!hotelGroups[hId]) {\n    hotelGroups[hId] = [];\n  }\n  hotelGroups[hId].push(contact);\n}\n\nreturn Object.keys(hotelGroups).slice(0, 5).map(hId => ({\n  json: {\n    hotel_id: hId,\n    emails_found: hotelGroups[hId]\n  }\n}));"
+      },
+      "id": "group-by-hotel",
+      "name": "Group by Hotel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "hotel_id",
+              "lookupValue": "={{ $json.hotel_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-hotel-details",
+      "name": "Get Hotel Details",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [900, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Groq Prompt\nconst hotel = $('Get Hotel Details').first().json || {};\nconst groupData = $('Group by Hotel').item.json || {};\nconst emails = groupData.emails_found || [];\n\nconst inputData = {\n  hotel: {\n    name: hotel.hotel_name || '',\n    town: hotel.town || '',\n    website: hotel.website || ''\n  },\n  emails_found: emails.map(e => ({\n    email: e.email,\n    source_url: e.source_url,\n    context: e.source_text || ''\n  }))\n};\n\nconst systemPrompt = `Eres un clasificador de contactos empresariales para candidaturas laborales.\nSolo puedes seleccionar direcciones que aparezcan literalmente en emails_found.\nNo inventes, completes ni adivines correos.\nPrioriza JOBS y HR, después MANAGEMENT, GENERAL y finalmente RECEPTION/RESERVATION.\nUn correo GENERAL requiere manual_review=true.\nMarca accommodation o meals como YES/NO únicamente con evidencia explícita.\nDevuelve exclusivamente JSON válido conforme al esquema solicitado.`;\n\nconst schemaInfo = `\nEsquema de salida requerido:\n{\n  \"is_target_establishment\": true,\n  \"language_region\": \"DE\",\n  \"has_food_operation\": true,\n  \"best_email\": \"jobs@example.ch\",\n  \"email_type\": \"JOBS\",\n  \"contact_name\": null,\n  \"contact_role\": null,\n  \"accommodation\": \"UNKNOWN\",\n  \"meals\": \"UNKNOWN\",\n  \"manual_review\": false,\n  \"reason\": \"Public jobs address found on career page\",\n  \"confidence\": 0.98\n}`;\n\nreturn [{\n  json: {\n    hotel_id: hotel.hotel_id,\n    prompt: JSON.stringify(inputData, null, 2) + schemaInfo,\n    system: systemPrompt,\n    emails: emails\n  }\n}];"
+      },
+      "id": "prepare-groq-prompt",
+      "name": "Prepare Groq Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.GROQ_MODEL || 'llama-3.3-70b-versatile' }}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": {{ JSON.stringify($json.system) }}\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.prompt) }}\n    }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "id": "call-groq-api",
+      "name": "Call Groq API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300],
+      "credentials": {
+        "groqApi": {
+          "id": "PLACEHOLDER",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate Groq Output\nconst apiResponse = $input.first().json;\nconst promptData = $('Prepare Groq Prompt').item.json;\nconst emails = promptData.emails;\n\nlet parsed;\ntry {\n  const content = apiResponse.choices[0].message.content;\n  parsed = JSON.parse(content);\n} catch (e) {\n  throw new Error('Groq returned invalid JSON');\n}\n\n// Rule 1: best_email must exist in emails_found\nconst bestEmail = parsed.best_email;\nif (bestEmail && !emails.find(e => e.email.toLowerCase() === bestEmail.toLowerCase())) {\n  parsed.manual_review = true;\n  parsed.reason = 'Groq hallucinated email: ' + bestEmail;\n  parsed.best_email = null;\n}\n\n// Rule 2: confidence\nconst conf = parsed.confidence || 0;\nif (conf < 0 || conf > 1) parsed.confidence = 0.5;\n\n// Rule 3: Classification logic\nlet finalStatus = 'NEEDS_REVIEW';\nif (parsed.manual_review) {\n  finalStatus = 'NEEDS_REVIEW';\n} else if (['GENERAL', 'RECEPTION', 'RESERVATION', 'UNKNOWN'].includes(parsed.email_type)) {\n  finalStatus = 'NEEDS_REVIEW';\n} else if (['HR', 'JOBS'].includes(parsed.email_type) && conf >= 0.85) {\n  finalStatus = 'READY_TO_SEND';\n}\n\n// Rule 4: Reject non-targets\nif (parsed.is_target_establishment === false) {\n  finalStatus = 'REJECTED';\n}\n\n// Update contacts list with decision\nconst results = emails.map(e => {\n  const isSelected = e.email.toLowerCase() === (parsed.best_email || '').toLowerCase();\n  return {\n    json: {\n      contact_id: e.contact_id,\n      hotel_id: e.hotel_id,\n      email: e.email,\n      email_type: isSelected ? parsed.email_type : e.email_type,\n      contact_name: isSelected ? parsed.contact_name : null,\n      contact_role: isSelected ? parsed.contact_role : null,\n      confidence: isSelected ? parsed.confidence : e.confidence,\n      preferred: isSelected,\n      review_status: isSelected ? finalStatus : 'REJECTED',\n      groq_reason: isSelected ? parsed.reason : 'Not selected'\n    }\n  };\n});\n\n// Add hotel update data\nconst hotelUpdate = {\n  hotel_id: promptData.hotel_id,\n  language_region: parsed.language_region,\n  accommodation: parsed.accommodation,\n  meals: parsed.meals,\n  manual_review: finalStatus === 'NEEDS_REVIEW' ? 'TRUE' : 'FALSE',\n  status: finalStatus === 'READY_TO_SEND' ? 'READY_TO_SEND' : \n         (finalStatus === 'NEEDS_REVIEW' ? 'NEEDS_REVIEW' : 'REJECTED')\n};\n\nreturn [{ json: { contacts: results.map(r => r.json), hotel: hotelUpdate } }];"
+      },
+      "id": "validate-output",
+      "name": "Validate Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "hotel_id": "={{ $json.hotel.hotel_id }}",
+            "language_region": "={{ $json.hotel.language_region }}",
+            "accommodation": "={{ $json.hotel.accommodation }}",
+            "meals": "={{ $json.hotel.meals }}",
+            "manual_review": "={{ $json.hotel.manual_review }}",
+            "status": "={{ $json.hotel.status }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-hotel-classification",
+      "name": "Update Hotel Classification",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1780, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.first().json.contacts;\nreturn items.map(c => ({ json: c }));"
+      },
+      "id": "split-contacts",
+      "name": "Split Contacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "contact_id": "={{ $json.contact_id }}",
+            "email_type": "={{ $json.email_type }}",
+            "contact_name": "={{ $json.contact_name }}",
+            "contact_role": "={{ $json.contact_role }}",
+            "confidence": "={{ $json.confidence }}",
+            "preferred": "={{ $json.preferred }}",
+            "review_status": "={{ $json.review_status }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-contacts",
+      "name": "Update Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2220, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WF-03 Groq Contact Classification\n\n**Trigger:** Every 30 minutes\n\n**Flow:**\n1. Gets contacts with NEEDS_REVIEW from CONTACTS sheet\n2. Groups them by Hotel\n3. Prepares context for Groq (hotel info + all found emails)\n4. Asks Groq to classify and pick the `best_email`\n5. Validates that Groq didn't hallucinate an email\n6. Applies business rules:\n   - HR/JOBS > 85% confidence -> READY_TO_SEND\n   - GENERAL/UNKNOWN -> NEEDS_REVIEW\n7. Updates HOTELS and CONTACTS sheets with the decision",
+        "width": 420,
+        "height": 280
+      },
+      "id": "note-groq",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 520]
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Unclassified Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Unclassified Contacts": {
+      "main": [
+        [
+          {
+            "node": "Group by Hotel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group by Hotel": {
+      "main": [
+        [
+          {
+            "node": "Get Hotel Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Hotel Details": {
+      "main": [
+        [
+          {
+            "node": "Prepare Groq Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Groq Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Groq API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Groq API": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Output": {
+      "main": [
+        [
+          {
+            "node": "Update Hotel Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Hotel Classification": {
+      "main": [
+        [
+          {
+            "node": "Split Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Contacts": {
+      "main": [
+        [
+          {
+            "node": "Update Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": []
+}

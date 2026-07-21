@@ -1,0 +1,181 @@
+{
+  "name": "WF-04 Review Queue Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily at 18:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "review_status",
+              "lookupValue": "NEEDS_REVIEW"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-needs-review",
+      "name": "Get NEEDS_REVIEW Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [460, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-items",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-items",
+      "name": "Check Items",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst count = items.length;\nlet html = `<h2>Review Queue Digest</h2><p>You have <strong>${count}</strong> contacts pending manual review in Google Sheets.</p><ul>`;\n\nfor (let i = 0; i < Math.min(10, count); i++) {\n  const row = items[i].json;\n  html += `<li><strong>${row.hotel_id || 'Unknown Hotel'}</strong> - ${row.email} (${row.email_type})<br/><em>Groq Reason:</em> ${row.groq_reason || 'N/A'}</li>`;\n}\n\nif (count > 10) {\n  html += `<li><em>...and ${count - 10} more.</em></li>`;\n}\nhtml += `</ul><p>Please open the Google Sheet, review them, and change status to <strong>READY_TO_SEND</strong> or <strong>REJECTED</strong>.</p>`;\n\nreturn [{ json: { count, html } }];"
+      },
+      "id": "format-digest",
+      "name": "Format Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 280]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.SENDER_EMAIL }}",
+        "subject": "={{ $json.count }} contacts need manual review",
+        "message": "={{ $json.html }}",
+        "appendAttribution": false,
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "send-email",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1120, 280],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "PLACEHOLDER",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WF-04 Review Queue\n\n**Trigger:** Daily at 18:00\n\n**Flow:**\n1. Gets all contacts marked `NEEDS_REVIEW`.\n2. If there are any, prepares an HTML digest.\n3. Sends an email to the admin (`SENDER_EMAIL`) reminding them to review the Google Sheet.\n4. Admin manually changes `NEEDS_REVIEW` to `READY_TO_SEND` or `REJECTED` in Google Sheets.",
+        "width": 380,
+        "height": 240
+      },
+      "id": "note-review",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 520]
+    }
+  ],
+  "connections": {
+    "Daily at 18:00": {
+      "main": [
+        [
+          {
+            "node": "Get NEEDS_REVIEW Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get NEEDS_REVIEW Contacts": {
+      "main": [
+        [
+          {
+            "node": "Check Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Items": {
+      "main": [
+        [
+          {
+            "node": "Format Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": []
+}

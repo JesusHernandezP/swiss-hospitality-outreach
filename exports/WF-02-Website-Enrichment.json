@@ -1,0 +1,454 @@
+{
+  "name": "WF-02 Website Enrichment",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 480]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "filters": {
+          "conditions": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "SCRAPE_PENDING"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-pending-hotels",
+      "name": "Get Pending Hotels",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [460, 380],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nif (items.length === 0) return [];\nreturn items.slice(0, 10);"
+      },
+      "id": "limit-batch",
+      "name": "Limit Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 380]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.website || 'https://localhost' }}",
+        "allowUnauthorizedCerts": true,
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": "follow",
+            "maxRedirects": 5
+          }
+        }
+      },
+      "id": "fetch-homepage",
+      "name": "Fetch Homepage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 380],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pages = $input.all();\nconst hotels = $('Limit Batch').all();\nconst out = [];\n\nconst keywords = ['kontakt', 'contact', 'about', 'company', 'team', 'staff', 'management', 'jobs', 'career', 'karriere', 'bewerbung', 'personal', 'hr', 'restaurant', 'kitchen', 'fnb', 'gastronomie', 'chef', 'impressum', 'datenschutz', 'legal', 'ueber-uns', 'über-uns'];\nconst emailRegex = /([a-zA-Z0-9._-]+(?:@|\\(at\\)|\\[at\\]|&#64;|&amp;#64;|\\{at\\})[a-zA-Z0-9._-]+\\.[a-zA-Z0-9_-]+)/gi;\n\nfunction extractEmails(html) {\n  const raw = html.match(emailRegex) || [];\n  return [...new Set(raw.map(e => e.toLowerCase()))];\n}\n\nfor (let i = 0; i < hotels.length; i++) {\n  const hotel = hotels[i].json;\n  const html = pages[i]?.json?.data || '';\n  const base_url = hotel.website || '';\n  \n  const homepageEmails = extractEmails(html);\n  \n  const linkRegex = /href=[\"']([^\"']+)[\"']/gi;\n  let match;\n  const links = [];\n  const socials = [];\n  \n  while ((match = linkRegex.exec(html)) !== null) {\n    let l = match[1].trim();\n    if (l.startsWith('mailto:') || l.startsWith('tel:') || l.startsWith('javascript:')) continue;\n    \n    if (l.includes('facebook.com') || l.includes('instagram.com') || l.includes('linkedin.com')) {\n      socials.push(l);\n      continue;\n    }\n    \n    if (!base_url) continue;\n    \n    try {\n      const urlObj = new URL(l, base_url);\n      if (urlObj.hostname === new URL(base_url).hostname) {\n        links.push(urlObj.href);\n      }\n    } catch(e) {}\n  }\n  \n  const uniqueLinks = [...new Set(links)];\n  const interesting = uniqueLinks.filter(l => {\n    const lower = l.toLowerCase();\n    return keywords.some(k => lower.includes(k));\n  }).slice(0, 12);\n  \n  if (interesting.length === 0 || !base_url) {\n    out.push({\n      json: {\n        hotel_id: hotel.hotel_id,\n        url_to_fetch: base_url,\n        homepage_emails: homepageEmails,\n        social_links: [...new Set(socials)],\n        base_url: base_url\n      }\n    });\n  } else {\n    for (const link of interesting) {\n      out.push({\n        json: {\n          hotel_id: hotel.hotel_id,\n          url_to_fetch: link,\n          homepage_emails: homepageEmails,\n          social_links: [...new Set(socials)],\n          base_url: base_url\n        }\n      });\n    }\n  }\n}\nreturn out;"
+      },
+      "id": "extract-links-socials",
+      "name": "Extract Links & Socials",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 380]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url_to_fetch || 'https://localhost' }}",
+        "allowUnauthorizedCerts": true,
+        "options": {
+          "timeout": 10000,
+          "redirect": {
+            "redirect": "follow",
+            "maxRedirects": 3
+          }
+        }
+      },
+      "id": "fetch-subpages",
+      "name": "Fetch Subpages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 380],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const subpages = $input.all();\nconst linkItems = $('Extract Links & Socials').all();\nconst hotels = $('Limit Batch').all();\n\nconst hotelMap = {};\nfor (const h of hotels) {\n  hotelMap[h.json.hotel_id] = {\n    hotel: h.json,\n    emailsMap: {},\n    socials: []\n  };\n}\n\nconst emailRegex = /([a-zA-Z0-9._-]+(?:@|\\(at\\)|\\[at\\]|&#64;|&amp;#64;|\\{at\\})[a-zA-Z0-9._-]+\\.[a-zA-Z0-9_-]+)/gi;\nconst invalidEnds = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.pdf', '.css', '.js'];\nconst invalidStarts = ['example@', 'noreply@', 'no-reply@', 'wordpress@', 'sentry@', 'wix@', 'cloudflare@', 'name@'];\n\nfunction cleanEmail(e) {\n  return e.toLowerCase().replace(/\\(at\\)/g, '@').replace(/\\[at\\]/g, '@').replace(/&#64;/g, '@').replace(/&amp;#64;/g, '@').replace(/\\{at\\}/g, '@').replace(/\\s+/g, '');\n}\n\nfunction isValidEmail(email) {\n  if (invalidEnds.some(ext => email.endsWith(ext))) return false;\n  if (invalidStarts.some(start => email.startsWith(start))) return false;\n  // Filter software package/version patterns like jquery@3.7.1, slick-carousel@1.8.1, pdfjs-dist@4.2.67\n  if (/@\\d+\\.\\d+/.test(email)) return false;\n  // Filter common library names or npm package patterns\n  if (email.startsWith('jquery@') || email.startsWith('slick-carousel@') || email.startsWith('pdfjs-dist@') || email.startsWith('bootstrap@') || email.startsWith('font-awesome@')) return false;\n  // Require valid TLD (at least 2 letters)\n  const parts = email.split('@');\n  if (parts.length !== 2) return false;\n  const domainParts = parts[1].split('.');\n  if (domainParts.length < 2) return false;\n  const tld = domainParts[domainParts.length - 1];\n  if (!/^[a-z]{2,10}$/.test(tld)) return false;\n  return true;\n}\n\nfunction getPriorityAndType(email) {\n  let type = 'UNKNOWN';\n  let priority = 8;\n  if (email.includes('job') || email.includes('karriere') || email.includes('career') || email.includes('bewerb') || email.includes('talent')) { type = 'JOBS'; priority = 1; }\n  else if (email.includes('hr@') || email.includes('humanresources') || email.includes('personal') || email.includes('recruiting')) { type = 'HR'; priority = 2; }\n  else if (email.includes('chef@') || email.includes('kueche') || email.includes('küche') || email.includes('kitchen') || email.includes('gastronomie') || email.includes('fnb') || email.includes('foodandbeverage') || email.includes('fb@') || email.includes('culinary') || email.includes('restaurant') || email.includes('cuisine')) { type = 'KITCHEN_FNB'; priority = 3; }\n  else if (email.includes('direktion') || email.includes('director') || email.includes('manager') || email.includes('management') || email.includes('geschäftsleitung') || email.includes('office') || email.includes('administration')) { type = 'MANAGEMENT'; priority = 4; }\n  else if (email.includes('info@') || email.includes('kontakt') || email.includes('contact') || email.includes('general')) { type = 'GENERAL'; priority = 5; }\n  else if (email.includes('reception') || email.includes('frontoffice') || email.includes('frontdesk')) { type = 'RECEPTION'; priority = 6; }\n  else if (email.includes('reservation') || email.includes('booking') || email.includes('reservierung')) { type = 'RESERVATION'; priority = 7; }\n  \n  return { type, priority };\n}\n\nfor (let i = 0; i < linkItems.length; i++) {\n  const meta = linkItems[i].json;\n  const html = subpages[i]?.json?.data || '';\n  const hotel_id = meta.hotel_id;\n  \n  let title = 'Homepage';\n  const titleMatch = html.match(/<title>([^<]+)<\\/title>/i);\n  if (titleMatch) title = titleMatch[1].trim().substring(0, 50);\n  \n  if (!hotelMap[hotel_id]) continue;\n  const map = hotelMap[hotel_id].emailsMap;\n  hotelMap[hotel_id].socials = meta.social_links || [];\n  \n  let source_type = meta.base_url ? 'WEBSITE' : 'GOOGLE_MAPS';\n  let url_source = meta.url_to_fetch || meta.base_url || 'Google Maps';\n  \n  const addEmail = (rawE, srcUrl, srcType, pTitle) => {\n    const e = cleanEmail(rawE);\n    if (!isValidEmail(e)) return;\n    const { type, priority } = getPriorityAndType(e);\n    \n    if (map[e]) {\n      const existing = map[e];\n      if (priority < existing.priority) {\n        map[e] = { source_url: srcUrl, source_type: srcType, page_title: pTitle, email_type: type, priority: priority };\n      }\n    } else {\n      map[e] = { source_url: srcUrl, source_type: srcType, page_title: pTitle, email_type: type, priority: priority };\n    }\n  };\n\n  for (const e of (meta.homepage_emails || [])) {\n    addEmail(e, meta.base_url || 'Google Maps', source_type, 'Homepage');\n  }\n  \n  const subEmails = html.match(emailRegex) || [];\n  for (const e of subEmails) {\n    addEmail(e, url_source, source_type, title);\n  }\n}\n\nreturn Object.values(hotelMap).map(h => ({ json: h }));"
+      },
+      "id": "aggregate-emails",
+      "name": "Aggregate Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 380]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "filters": {
+          "conditions": []
+        },
+        "options": {}
+      },
+      "id": "read-existing-contacts",
+      "name": "Read Existing Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1780, 380],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const aggregated = $('Aggregate Emails').all();\nconst existingContacts = $('Read Existing Contacts').all().map(i => i.json);\n\nconst existingSet = new Set();\nfor (const c of existingContacts) {\n  if (c.hotel_id && c.email) {\n    existingSet.add(c.hotel_id + '_' + c.email.toLowerCase());\n  }\n}\n\nconst out = [];\nconst metrics = {\n  date: new Date().toISOString().split('T')[0],\n  processed: aggregated.length,\n  with_web: 0,\n  without_web: 0,\n  found: 0,\n  hr_found: 0,\n  kitchen_fnb_found: 0,\n  general_found: 0,\n  google_maps_found: 0,\n  duplicates_eliminated: 0,\n  hotels_with_email: 0\n};\n\nfor (const item of aggregated) {\n  const h = item.json;\n  const hid = h.hotel.hotel_id;\n  \n  if (h.hotel.website) metrics.with_web++;\n  else metrics.without_web++;\n  \n  let addedForThisHotel = 0;\n  \n  for (const [email, meta] of Object.entries(h.emailsMap)) {\n    const key = hid + '_' + email;\n    if (existingSet.has(key)) {\n      metrics.duplicates_eliminated++;\n      continue;\n    }\n    \n    out.push({\n      json: {\n        _route: 'contact',\n        contact_id: 'cnt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),\n        hotel_id: hid,\n        email: email,\n        email_type: meta.email_type,\n        priority: meta.priority,\n        source_url: meta.source_url,\n        page_title: meta.page_title,\n        source_type: meta.source_type,\n        source_text: h.socials.join(', '),\n        confidence: meta.priority <= 2 ? 0.9 : (meta.priority === 3 ? 0.8 : 0.5),\n        verified_syntax: true,\n        verified_domain: true,\n        preferred: false,\n        review_status: 'NEEDS_REVIEW',\n        created_at: new Date().toISOString()\n      }\n    });\n    \n    addedForThisHotel++;\n    metrics.found++;\n    if (meta.email_type === 'HR' || meta.email_type === 'JOBS') metrics.hr_found++;\n    if (meta.email_type === 'KITCHEN_FNB') metrics.kitchen_fnb_found++;\n    if (meta.email_type === 'GENERAL') metrics.general_found++;\n    if (meta.source_type === 'GOOGLE_MAPS') metrics.google_maps_found++;\n  }\n  \n  if (addedForThisHotel > 0) metrics.hotels_with_email++;\n  \n  out.push({\n    json: {\n      _route: 'hotel',\n      hotel_id: hid,\n      status: 'SCRAPED',\n      updated_at: new Date().toISOString()\n    }\n  });\n}\n\nout.push({\n  json: {\n    _route: 'metric',\n    date: metrics.date,\n    processed: metrics.processed,\n    with_web: metrics.with_web,\n    without_web: metrics.without_web,\n    found: metrics.found,\n    hr_found: metrics.hr_found,\n    kitchen_fnb_found: metrics.kitchen_fnb_found,\n    general_found: metrics.general_found,\n    google_maps_found: metrics.google_maps_found,\n    duplicates_eliminated: metrics.duplicates_eliminated,\n    hotels_with_email: metrics.hotels_with_email\n  }\n});\n\nreturn out;",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "deduplicate-and-finalize",
+      "name": "Deduplicate & Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 380]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json._route }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "contact",
+              "output": 0
+            },
+            {
+              "value2": "hotel",
+              "output": 1
+            },
+            {
+              "value2": "metric",
+              "output": 2
+            }
+          ]
+        },
+        "fallbackOutput": 3
+      },
+      "id": "switch-router",
+      "name": "Route Items",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2200, 380]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "CONTACTS"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "insert-contacts",
+      "name": "Insert Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "HOTELS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "hotel_id": "={{ $json.hotel_id }}",
+            "status": "={{ $json.status }}",
+            "updated_at": "={{ $json.updated_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "update-hotel",
+      "name": "Update Hotel",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 420],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "METRICS"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "log-metrics",
+      "name": "Log Metrics",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2440, 580],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WF-02 Phase B (Maximizador)\n\n1. Obtiene 10 hoteles (incluso sin web).\n2. Extrae emails ofuscados y enlaces hasta 12 págs.\n3. Extrae emails de subpáginas.\n4. Obtiene CONTACTS actuales para deduplicar.\n5. Evalúa prioridades, limpia y clasifica.\n6. Rama 1: Inserta nuevos contactos.\n7. Rama 2: Actualiza hoteles a SCRAPED.\n8. Rama 3: Loguea métricas siempre.",
+        "width": 380,
+        "height": 280
+      },
+      "id": "note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 600]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Pending Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Pending Hotels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Pending Hotels": {
+      "main": [
+        [
+          {
+            "node": "Limit Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit Batch": {
+      "main": [
+        [
+          {
+            "node": "Fetch Homepage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Homepage": {
+      "main": [
+        [
+          {
+            "node": "Extract Links & Socials",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Links & Socials": {
+      "main": [
+        [
+          {
+            "node": "Fetch Subpages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Subpages": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Emails": {
+      "main": [
+        [
+          {
+            "node": "Read Existing Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Existing Contacts": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate & Finalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deduplicate & Finalize": {
+      "main": [
+        [
+          {
+            "node": "Route Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Items": {
+      "main": [
+        [
+          {
+            "node": "Insert Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Hotel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": []
+}

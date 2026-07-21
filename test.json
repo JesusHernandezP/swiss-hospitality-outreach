@@ -1,0 +1,18 @@
+﻿{
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "return [[{json:{a:1}}], [{json:{b:2}}]];"
+      },
+      "name": "Code",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "typeOptions": {
+        "multipleValues": {
+          "mainOutputs": 2
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# n8n data (Docker volume)
+n8n_data/
+
+# Environment secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

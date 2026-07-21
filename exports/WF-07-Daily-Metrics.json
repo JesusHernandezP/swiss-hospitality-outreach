@@ -1,0 +1,145 @@
+{
+  "name": "WF-07 Daily Metrics",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "50 23 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily at 23:50",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "EVENTS"
+        },
+        "filters": {
+          "conditions": []
+        },
+        "options": {}
+      },
+      "id": "get-events",
+      "name": "Get Events",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [460, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const events = $input.all().map(i => i.json);\nconst today = new Date().toISOString().split('T')[0];\n\nconst todayEvents = events.filter(e => e.timestamp && e.timestamp.startsWith(today));\n\nconst metrics = {\n  date: today,\n  discovered: 0,\n  sent: 0,\n  interviews: 0,\n  rejected: 0,\n  no_vacancy: 0,\n  info_request: 0,\n  errors: 0\n};\n\nfor (const e of todayEvents) {\n  switch (e.event_type) {\n    case 'DISCOVERY_COMPLETE': metrics.discovered += 1; break;\n    case 'EMAIL_SENT': metrics.sent += 1; break;\n    case 'INTERVIEW': metrics.interviews += 1; break;\n    case 'REJECTED': metrics.rejected += 1; break;\n    case 'NO_VACANCY': metrics.no_vacancy += 1; break;\n    case 'INFO_REQUEST': metrics.info_request += 1; break;\n    case 'ERROR': metrics.errors += 1; break;\n  }\n}\n\nreturn [{ json: metrics }];"
+      },
+      "id": "aggregate-metrics",
+      "name": "Aggregate Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "METRICS"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "log-metrics",
+      "name": "Log Metrics",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [900, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WF-07 Daily Metrics\n\n**Trigger:** Daily at 23:50\n\n**Flow:**\n1. Reads all events from EVENTS sheet\n2. Filters events matching today's date\n3. Aggregates counts by category (sent, rejected, interviews, etc.)\n4. Appends a new row to the METRICS sheet for tracking progress over time",
+        "width": 380,
+        "height": 220
+      },
+      "id": "note-metrics",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 520]
+    }
+  ],
+  "connections": {
+    "Daily at 23:50": {
+      "main": [
+        [
+          {
+            "node": "Get Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Events": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Metrics": {
+      "main": [
+        [
+          {
+            "node": "Log Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": []
+}

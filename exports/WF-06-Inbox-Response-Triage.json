@@ -1,0 +1,207 @@
+{
+  "name": "WF-06 Inbox Response Triage",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 15,
+              "unit": "minutes"
+            }
+          ]
+        },
+        "filters": {
+          "q": "is:unread label:inbox"
+        }
+      },
+      "id": "gmail-trigger",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "PLACEHOLDER",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $input.first().json;\n\n// We only want replies from domains we contacted. \n// But for now, we'll classify any unread email that has a body.\nconst sender = email.from.value[0].address;\nconst subject = email.subject || '';\nconst text = email.text || email.snippet || '';\n\nif (!text) return [];\n\nconst systemPrompt = `Eres un clasificador de respuestas de correo para candidaturas espontáneas de empleo en hostelería.\nClasifica la respuesta en UNA de las siguientes categorías exactas:\n- INTERVIEW (solicitan entrevista, llamada o prueba)\n- INFO_REQUEST (piden más documentos, referencias o responder preguntas)\n- REJECTED (rechazo general, no perfil)\n- NO_VACANCY (no hay vacantes ahora, a veces guardan CV)\n- NO_ACCOMMODATION (rechazo porque no ofrecen alojamiento)\n- SWISS_RESIDENCE_REQUIRED (rechazo porque exigen permiso/residencia en Suiza)\n- OTHER (respuestas automáticas, spam, no relacionadas)\n\nDevuelve JSON estructurado.`;\n\nconst inputData = {\n  sender: sender,\n  subject: subject,\n  body: text.substring(0, 3000) // limit length\n};\n\nconst schemaInfo = `\nEsquema requerido:\n{\n  \"classification\": \"REJECTED\",\n  \"confidence\": 0.95,\n  \"reason\": \"Brief explanation of why\"\n}`;\n\nreturn [{\n  json: {\n    message_id: email.id,\n    sender: sender,\n    subject: subject,\n    prompt: JSON.stringify(inputData, null, 2) + schemaInfo,\n    system: systemPrompt\n  }\n}];"
+      },
+      "id": "prepare-groq",
+      "name": "Prepare Groq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.GROQ_MODEL || 'llama-3.3-70b-versatile' }}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": {{ JSON.stringify($json.system) }}\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.prompt) }}\n    }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "id": "call-groq",
+      "name": "Call Groq",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "groqApi": {
+          "id": "PLACEHOLDER",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const apiResponse = $input.first().json;\nconst meta = $('Prepare Groq').first().json;\n\nlet parsed;\ntry {\n  parsed = JSON.parse(apiResponse.choices[0].message.content);\n} catch(e) {\n  parsed = { classification: 'OTHER', confidence: 0, reason: 'Parse error' };\n}\n\nreturn [{\n  json: {\n    message_id: meta.message_id,\n    sender: meta.sender,\n    subject: meta.subject,\n    classification: parsed.classification,\n    confidence: parsed.confidence,\n    reason: parsed.reason,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "EVENTS"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "event_id": "={{ 'reply-' + Date.now() }}",
+            "timestamp": "={{ $json.timestamp }}",
+            "workflow": "WF-06 Triage",
+            "entity_type": "EMAIL",
+            "entity_id": "={{ $json.sender }}",
+            "event_type": "={{ $json.classification }}",
+            "details_json": "={{ JSON.stringify({ subject: $json.subject, reason: $json.reason }) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-event",
+      "name": "Log Event",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1120, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "messageId": "={{ $('Prepare Groq').item.json.message_id }}",
+        "labels": [
+          "UNREAD"
+        ]
+      },
+      "id": "mark-read",
+      "name": "Mark as Read",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1340, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "PLACEHOLDER",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## WF-06 Inbox Response Triage\n\n**Trigger:** New unread emails in Inbox (poll every 15m)\n\n**Flow:**\n1. Reads email content and sender\n2. Sends to Groq for classification (INTERVIEW, REJECTED, NO_VACANCY, etc.)\n3. Logs the result into EVENTS sheet\n4. Marks the email as read in Gmail (so it isn't processed again)\n\n*Note: To fully update the HOTELS status, we'd need to look up the hotel by domain/email. For MVP, logging is enough to let the user track.*",
+        "width": 380,
+        "height": 280
+      },
+      "id": "note-triage",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [200, 520]
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Groq": {
+      "main": [
+        [
+          {
+            "node": "Call Groq",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Groq": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Response": {
+      "main": [
+        [
+          {
+            "node": "Log Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Event": {
+      "main": [
+        [
+          {
+            "node": "Mark as Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "WF-99 Error Handler"
+  },
+  "staticData": null,
+  "tags": []
+}
