@@ -383,7 +383,10 @@
           "value": {
             "contact_id": "={{ $('Prepare Email').item.json.contact_id }}",
             "review_status": "SENT"
-          }
+          },
+          "matchingColumns": [
+            "contact_id"
+          ]
         },
         "options": {}
       },
@@ -417,7 +420,10 @@
           "value": {
             "hotel_id": "={{ $('Prepare Email').item.json.hotel_id }}",
             "status": "SENT"
-          }
+          },
+          "matchingColumns": [
+            "hotel_id"
+          ]
         },
         "options": {}
       },
