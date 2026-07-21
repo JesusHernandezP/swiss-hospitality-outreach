@@ -327,7 +327,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nconst isDryRun = $('If DRY_RUN').first().json.dry_run;\nlet messageId = data.message_id || data.id || 'unknown';\n\nconst now = new Date().toISOString();\n\nconst event = {\n  event_id: 'evt-' + Date.now(),\n  timestamp: now,\n  workflow: 'WF-05 Outreach Sender',\n  entity_type: 'CONTACT',\n  entity_id: data.contact_id || $('Prepare Email').first().json.contact_id,\n  event_type: 'EMAIL_SENT',\n  details_json: JSON.stringify({ message_id: messageId, dry_run: isDryRun })\n};\n\nreturn [{ json: event }];"
+        "jsCode": "const inputItem = $input.first();\nconst data = inputItem ? inputItem.json : {};\n\nlet isDryRun = true;\ntry {\n  const dryRunNode = $('If DRY_RUN').first();\n  if (dryRunNode && dryRunNode.json) {\n    isDryRun = dryRunNode.json.dry_run !== undefined ? dryRunNode.json.dry_run : true;\n  }\n} catch(e) {}\n\nlet messageId = data.message_id || data.id || 'unknown';\nconst now = new Date().toISOString();\nconst prepEmail = $('Prepare Email').first() ? $('Prepare Email').first().json : {};\n\nconst event = {\n  event_id: 'evt-' + Date.now(),\n  timestamp: now,\n  workflow: 'WF-05 Outreach Sender',\n  entity_type: 'CONTACT',\n  entity_id: data.contact_id || prepEmail.contact_id || 'unknown',\n  event_type: 'EMAIL_SENT',\n  details_json: JSON.stringify({ message_id: messageId, dry_run: isDryRun })\n};\n\nreturn [{ json: event }];"
       },
       "id": "prepare-log",
       "name": "Prepare Log",
