@@ -110,6 +110,7 @@
     },
     {
       "parameters": {
+        "method": "POST",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "sendHeaders": true,
         "headerParameters": {
