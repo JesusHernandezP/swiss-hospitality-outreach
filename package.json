@@ -1,0 +1,20 @@
+{
+  "name": "swiss-hospitality-outreach",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Automated outreach system for Swiss hospitality job applications",
+  "scripts": {
+    "start": "node scripts/runner.js",
+    "dry-run": "DRY_RUN=true node scripts/runner.js",
+    "discovery-only": "node scripts/runner.js --phase=discovery",
+    "enrich-only": "node scripts/runner.js --phase=enrichment",
+    "classify-only": "node scripts/runner.js --phase=classification",
+    "send-only": "node scripts/runner.js --phase=send"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.7",
+    "googleapis": "^146.0.0"
+  }
+}

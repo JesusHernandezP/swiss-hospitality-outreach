@@ -2,13 +2,27 @@ name: Swiss Hospitality Outreach Automation
 
 on:
   schedule:
-    # Runs every hour from 07:00 to 17:00 UTC (09:00 to 19:00 Madrid time) Monday through Friday
-    - cron: '0 7-17 * * 1-5'
-  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+    # Runs every 2 hours from 07:00 to 17:00 UTC (09:00 to 19:00 Madrid time) Monday through Saturday
+    - cron: '0 7,9,11,13,15,17 * * 1-6'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'Which phase to run (all, discovery, enrichment, classification, send)'
+        required: false
+        default: 'all'
+      dry_run:
+        description: 'Run in dry-run mode (no actual sends)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   run-outreach:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
@@ -17,27 +31,44 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
 
       - name: Install Dependencies
-        run: |
-          npm install googleapis axios dotenv
+        run: npm install
 
-      - name: Run Swiss Outreach Runner Script
+      - name: Run Swiss Outreach Pipeline
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
-          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          GOOGLE_DRIVE_CV_FILE_ID: ${{ secrets.GOOGLE_DRIVE_CV_FILE_ID }}
-          GOOGLE_DRIVE_MOTIVATION_FILE_ID: ${{ secrets.GOOGLE_DRIVE_MOTIVATION_FILE_ID }}
-          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          # Google OAuth2 (required for Sheets, Drive, Gmail)
           GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
           GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          MAX_DAILY_SENDS: ${{ secrets.MAX_DAILY_SENDS || '20' }}
-          DRY_RUN: ${{ secrets.DRY_RUN || 'false' }}
-          OUTREACH_ENABLED: ${{ secrets.OUTREACH_ENABLED || 'true' }}
+
+          # Google resource IDs
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_DRIVE_CV_FILE_ID: ${{ secrets.GOOGLE_DRIVE_CV_FILE_ID }}
+          GOOGLE_DRIVE_MOTIVATION_FILE_ID: ${{ secrets.GOOGLE_DRIVE_MOTIVATION_FILE_ID }}
+
+          # APIs
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+
+          # Email configuration
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL || 'hernandezpacheco2805@gmail.com' }}
+
+          # Outreach controls
+          MAX_DAILY_SENDS: ${{ vars.MAX_DAILY_SENDS || '20' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || 'false' }}
+          OUTREACH_ENABLED: ${{ vars.OUTREACH_ENABLED || 'true' }}
+
+          # Timing
           TIMEZONE: 'Europe/Madrid'
+          MIN_DELAY_SECONDS: '420'
+          MAX_DELAY_SECONDS: '900'
         run: |
-          node scripts/runner.js
+          PHASE="${{ github.event.inputs.phase || 'all' }}"
+          if [ "$PHASE" != "all" ]; then
+            node scripts/runner.js --phase=$PHASE
+          else
+            node scripts/runner.js
+          fi

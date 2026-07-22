@@ -1,205 +1,206 @@
 /**
- * Swiss Hospitality Outreach - Autonomous GitHub Runner (Opción A)
- * Full E2E logic: Google Sheets + Drive + Groq AI + Gmail OAuth2
+ * Swiss Hospitality Outreach — Main Runner (v2.0)
+ * Complete pipeline: Discovery → Enrichment → Classification → Outreach
+ *
+ * This script orchestrates the entire outreach workflow:
+ * 1. Discovers hotels via Apify Google Maps
+ * 2. Scrapes hotel websites for email contacts
+ * 3. Classifies contacts using Groq AI
+ * 4. Sends individualized application emails via Gmail
+ *
+ * Environment variables (from GitHub Secrets):
+ *   GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN
+ *   GOOGLE_SHEET_ID, GOOGLE_DRIVE_CV_FILE_ID, GOOGLE_DRIVE_MOTIVATION_FILE_ID
+ *   GROQ_API_KEY, GROQ_MODEL, APIFY_TOKEN
+ *   SENDER_EMAIL, MAX_DAILY_SENDS, DRY_RUN, OUTREACH_ENABLED
  */
 
-const fs = require('fs');
-const axios = require('axios');
-const { google } = require('googleapis');
+// Load .env for local development (no-op in GitHub Actions)
+try { require('dotenv').config(); } catch { /* optional */ }
 
-const ENV = process.env;
+const { createAuth, getApis } = require('./lib/google');
+const { discoverHotels } = require('./lib/discovery');
+const { enrichWebsites } = require('./lib/enrichment');
+const { classifyContacts } = require('./lib/classifier');
+const { sendOutreachEmails } = require('./lib/sender');
 
 async function main() {
-  console.log('====================================================');
-  console.log('   Swiss Hospitality Outreach - Cloud Action      ');
-  console.log('====================================================');
+  const startTime = Date.now();
+
+  console.log('╔══════════════════════════════════════════════╗');
+  console.log('║  Swiss Hospitality Outreach v2.0             ║');
+  console.log('║  Automated Job Application Pipeline          ║');
+  console.log('╚══════════════════════════════════════════════╝');
   console.log(`Timestamp: ${new Date().toISOString()}`);
-  console.log(`MAX_DAILY_SENDS: ${ENV.MAX_DAILY_SENDS || 20}`);
-  console.log(`DRY_RUN: ${ENV.DRY_RUN || 'false'}`);
-  console.log(`OUTREACH_ENABLED: ${ENV.OUTREACH_ENABLED || 'true'}`);
+  console.log(`DRY_RUN: ${process.env.DRY_RUN || 'false'}`);
+  console.log(`OUTREACH_ENABLED: ${process.env.OUTREACH_ENABLED || 'true'}`);
+  console.log(`MAX_DAILY_SENDS: ${process.env.MAX_DAILY_SENDS || '20'}`);
 
-  if (!ENV.GOOGLE_SHEET_ID) {
-    throw new Error('MISSING SECRET: GOOGLE_SHEET_ID');
+  // Parse CLI arguments for running specific phases
+  const args = process.argv.slice(2);
+  const phaseArg = args.find(a => a.startsWith('--phase='));
+  const targetPhase = phaseArg ? phaseArg.split('=')[1] : 'all';
+  const dryRun = process.env.DRY_RUN === 'true';
+
+  console.log(`Phase: ${targetPhase}`);
+  console.log('');
+
+  // ═══════════════════════════════════════════
+  //  VALIDATE REQUIRED SECRETS
+  // ═══════════════════════════════════════════
+
+  const required = ['GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN', 'GOOGLE_SHEET_ID'];
+  const missing = required.filter(k => !process.env[k]);
+  if (missing.length > 0) {
+    console.error(`❌ Missing required secrets: ${missing.join(', ')}`);
+    console.error('Add them in GitHub Settings → Secrets and variables → Actions');
+    process.exit(1);
   }
-  if (!ENV.GROQ_API_KEY) {
-    throw new Error('MISSING SECRET: GROQ_API_KEY');
-  }
 
-  // 1. Setup Google OAuth2 Client
-  const oauth2Client = new google.auth.OAuth2(
-    ENV.GMAIL_CLIENT_ID,
-    ENV.GMAIL_CLIENT_SECRET,
-    'https://developers.google.com/oauthplayground'
-  );
+  // ═══════════════════════════════════════════
+  //  AUTHENTICATE WITH GOOGLE
+  // ═══════════════════════════════════════════
 
-  if (ENV.GMAIL_REFRESH_TOKEN) {
-    oauth2Client.setCredentials({ refresh_token: ENV.GMAIL_REFRESH_TOKEN });
-  }
-
-  const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
-  const drive = google.drive({ version: 'v3', auth: oauth2Client });
-  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-
-  console.log('Google API Auth: OK');
-
-  // 2. Fetch Search Queries and Discover Hotels
-  console.log('\n--- Step 1: Checking Search Queries ---');
+  console.log('🔐 Authenticating with Google APIs...');
+  let auth, sheets, drive, gmail;
   try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: ENV.GOOGLE_SHEET_ID,
-      range: 'SEARCH_QUERIES!A:C',
+    auth = createAuth();
+    const apis = getApis(auth);
+    sheets = apis.sheets;
+    drive = apis.drive;
+    gmail = apis.gmail;
+
+    // Test authentication by reading a sheet
+    await sheets.spreadsheets.values.get({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: 'SEARCH_QUERIES!A1:A1',
     });
-    const rows = res.data.values || [];
-    const enabledQueries = rows.slice(1).filter(r => (r[1] || '').toUpperCase() === 'TRUE').map(r => r[0]);
-    console.log(`Active Search Queries found: ${enabledQueries.length}`);
+    console.log('✓ Google API authentication successful\n');
   } catch (err) {
-    console.warn('Could not read SEARCH_QUERIES tab:', err.message);
+    console.error(`❌ Google API authentication failed: ${err.message}`);
+    console.error('Check that your OAuth2 refresh token is valid and has the required scopes:');
+    console.error('  - https://www.googleapis.com/auth/spreadsheets');
+    console.error('  - https://www.googleapis.com/auth/drive.readonly');
+    console.error('  - https://www.googleapis.com/auth/gmail.send');
+    process.exit(1);
   }
 
-  // 3. Process READY_TO_SEND Candidates
-  console.log('\n--- Step 2: Processing Outreach Candidates ---');
-  let contacts = [];
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: ENV.GOOGLE_SHEET_ID,
-      range: 'CONTACTS!A:Z',
-    });
-    const rows = res.data.values || [];
-    if (rows.length > 1) {
-      const headers = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
-      let statusIdx = headers.indexOf('review_status');
-      if (statusIdx === -1) statusIdx = headers.indexOf('status');
-      let emailIdx = headers.indexOf('email');
-      if (emailIdx === -1) emailIdx = headers.indexOf('contact_email');
+  // ═══════════════════════════════════════════
+  //  PIPELINE EXECUTION
+  // ═══════════════════════════════════════════
 
-      console.log(`Header Indices - Status Col: ${statusIdx}, Email Col: ${emailIdx}`);
+  const results = {
+    discovery: null,
+    enrichment: null,
+    classification: null,
+    sender: null,
+  };
 
-      // Auto-approve NEEDS_REVIEW to READY_TO_SEND for 100% full automation
-      let readyRows = rows.slice(1).filter(r => {
-        const val = String(r[statusIdx] || '').trim().toUpperCase();
-        return val === 'READY_TO_SEND';
+  // Phase 1: Hotel Discovery
+  if (targetPhase === 'all' || targetPhase === 'discovery') {
+    try {
+      results.discovery = await discoverHotels(sheets, {
+        maxQueries: 2,           // Process 2 search queries per run
+        maxResultsPerQuery: 20,  // Up to 20 hotels per query
+        dryRun,
+        discoveryIntervalDays: 7,
       });
-
-      if (readyRows.length === 0) {
-        console.log('No explicit READY_TO_SEND contacts found. Auto-approving NEEDS_REVIEW contacts for full automation...');
-        const pendingRows = rows.slice(1).filter(r => {
-          const val = String(r[statusIdx] || '').trim().toUpperCase();
-          return val === 'NEEDS_REVIEW';
-        });
-
-        if (pendingRows.length > 0) {
-          const maxSends = parseInt(ENV.MAX_DAILY_SENDS || '20', 10);
-          readyRows = pendingRows.slice(0, maxSends);
-          console.log(`Auto-approved ${readyRows.length} contacts from NEEDS_REVIEW to READY_TO_SEND.`);
-        }
-      }
-
-      console.log(`Contacts ready for send: ${readyRows.length}`);
-      
-      const maxSends = parseInt(ENV.MAX_DAILY_SENDS || '20', 10);
-      const batchToProcess = readyRows.slice(0, maxSends);
-      
-      if (batchToProcess.length > 0 && String(ENV.OUTREACH_ENABLED).toLowerCase() === 'true') {
-        console.log(`Processing batch of ${batchToProcess.length} emails...`);
-
-        // Fetch CV and Motivation attachments once
-        let cvBase64 = '', motBase64 = '';
-        if (ENV.DRY_RUN !== 'true') {
-          console.log('Fetching attachments from Google Drive...');
-          const cvRes = await drive.files.get({ fileId: ENV.GOOGLE_DRIVE_CV_FILE_ID, alt: 'media' }, { responseType: 'arraybuffer' });
-          const motRes = await drive.files.get({ fileId: ENV.GOOGLE_DRIVE_MOTIVATION_FILE_ID, alt: 'media' }, { responseType: 'arraybuffer' });
-          cvBase64 = Buffer.from(cvRes.data).toString('base64');
-          motBase64 = Buffer.from(motRes.data).toString('base64');
-        }
-
-        for (const contactToProcess of batchToProcess) {
-          const targetEmail = contactToProcess[emailIdx];
-          console.log(`\nTarget Contact Email: ${targetEmail}`);
-
-          if (ENV.DRY_RUN === 'true') {
-            console.log(`DRY_RUN mode active. Simulated send to: ${targetEmail}`);
-          } else {
-            console.log(`LIVE MODE: Executing email dispatch to ${targetEmail}...`);
-
-            const subject = 'Interesse an einer Tätigkeit als Koch / Küchenmitarbeiter';
-            const bodyText = `Sehr geehrte Damen und Herren,\n\nderzeit bin ich auf der Suche nach einer Stelle als Koch oder Küchenmitarbeiter in der Schweiz.\n\nIch verfüge über praktische Erfahrung in internationalen Hotel- und Restaurantküchen. Zu meinen bisherigen Aufgaben gehören Mise en Place, warme und kalte Küche, Grill, Plancha, Fritteuse, Frühstück, Buffet, Room Service, Bankett sowie die Mitarbeit während arbeitsintensiver Servicezeiten.\n\nBesonders interessiert mich die Möglichkeit, in der Schweiz zu leben und zu arbeiten. Zurzeit wohne ich in Madrid. Ich bin spanischer Staatsbürger (EU/EFTA) und stehe für einen kurzfristigen Umzug zur Verfügung. Spanisch ist meine Muttersprache, Englisch spreche ich auf B2-Niveau und Deutsch lerne ich derzeit auf A1-Niveau.\n\nMeinen Lebenslauf und mein Motivationsschreiben finden Sie im Anhang.\n\nFreundliche Grüsse\n\nJesus Hernandez\n+34 666 056 214\nhernandezpacheco2805@gmail.com`;
-
-            const boundary = '----=_Part_' + Date.now();
-            let rawEmail = [
-              `From: "Jesus Hernandez" <${ENV.SENDER_EMAIL || 'hernandezpacheco2805@gmail.com'}>`,
-              `To: ${targetEmail}`,
-              `Bcc: ${ENV.SENDER_EMAIL || 'hernandezpacheco2805@gmail.com'}`,
-              `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
-              'MIME-Version: 1.0',
-              `Content-Type: multipart/mixed; boundary="${boundary}"`,
-              '',
-              `--${boundary}`,
-              'Content-Type: text/plain; charset="UTF-8"',
-              'Content-Transfer-Encoding: 8bit',
-              '',
-              bodyText,
-              '',
-              `--${boundary}`,
-              'Content-Type: application/pdf; name="CV_Jesus_Hernandez.pdf"',
-              'Content-Disposition: attachment; filename="CV_Jesus_Hernandez.pdf"',
-              'Content-Transfer-Encoding: base64',
-              '',
-              cvBase64,
-              '',
-              `--${boundary}`,
-              'Content-Type: application/pdf; name="Carta_Motivacion_Jesus_Hernandez.pdf"',
-              'Content-Disposition: attachment; filename="Carta_Motivacion_Jesus_Hernandez.pdf"',
-              'Content-Transfer-Encoding: base64',
-              '',
-              motBase64,
-              '',
-              `--${boundary}--`
-            ].join('\r\n');
-
-            const encodedMessage = Buffer.from(rawEmail)
-              .toString('base64')
-              .replace(/\+/g, '-')
-              .replace(/\//g, '_')
-              .replace(/=+$/, '');
-
-            const sendRes = await gmail.users.messages.send({
-              userId: 'me',
-              requestBody: { raw: encodedMessage }
-            });
-
-            console.log(`Email Sent Successfully to ${targetEmail}! Gmail Message ID: ${sendRes.data.id}`);
-
-            // Update Status in CONTACTS Sheet to SENT
-            const rowIndex = rows.indexOf(contactToProcess) + 1;
-            function getColLetter(colIdx) {
-              let temp, letter = '';
-              while (colIdx >= 0) {
-                temp = colIdx % 26;
-                letter = String.fromCharCode(temp + 65) + letter;
-                colIdx = (colIdx - temp) / 26 - 1;
-              }
-              return letter;
-            }
-            const statusColLetter = getColLetter(statusIdx);
-            await sheets.spreadsheets.values.update({
-              spreadsheetId: ENV.GOOGLE_SHEET_ID,
-              range: `CONTACTS!${statusColLetter}${rowIndex}`,
-              valueInputOption: 'USER_ENTERED',
-              requestBody: { values: [['SENT']] }
-            });
-            console.log(`Updated contact row ${rowIndex} status to SENT in Google Sheets (Col ${statusColLetter}).`);
-          }
-        }
-      }
+    } catch (err) {
+      console.error(`\n❌ Discovery phase failed: ${err.message}`);
+      results.discovery = { error: err.message };
     }
-  } catch (err) {
-    console.error('Error processing CONTACTS:', err.message);
   }
 
-  console.log('\n=== Execution Completed Successfully ===');
+  // Phase 2: Website Enrichment (extract emails from hotel websites)
+  if (targetPhase === 'all' || targetPhase === 'enrichment') {
+    try {
+      results.enrichment = await enrichWebsites(sheets, {
+        maxHotels: 8,  // Process up to 8 hotels per run
+        dryRun,
+      });
+    } catch (err) {
+      console.error(`\n❌ Enrichment phase failed: ${err.message}`);
+      results.enrichment = { error: err.message };
+    }
+  }
+
+  // Phase 3: Contact Classification
+  if (targetPhase === 'all' || targetPhase === 'classification') {
+    try {
+      results.classification = await classifyContacts(sheets, {
+        maxHotels: 20,
+        dryRun,
+      });
+    } catch (err) {
+      console.error(`\n❌ Classification phase failed: ${err.message}`);
+      results.classification = { error: err.message };
+    }
+  }
+
+  // Phase 4: Email Sending
+  if (targetPhase === 'all' || targetPhase === 'send') {
+    try {
+      results.sender = await sendOutreachEmails(sheets, drive, gmail, {
+        dryRun,
+      });
+    } catch (err) {
+      console.error(`\n❌ Sender phase failed: ${err.message}`);
+      results.sender = { error: err.message };
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  //  EXECUTION SUMMARY
+  // ═══════════════════════════════════════════
+
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+  console.log('\n╔══════════════════════════════════════════════╗');
+  console.log('║  EXECUTION SUMMARY                           ║');
+  console.log('╚══════════════════════════════════════════════╝');
+  console.log(`Duration: ${elapsed}s`);
+
+  if (results.discovery) {
+    const d = results.discovery;
+    if (d.error) {
+      console.log(`Discovery:      ❌ ${d.error}`);
+    } else {
+      console.log(`Discovery:      ${d.hotelsAdded} new hotels (${d.hotelsFound} found, ${d.queriesProcessed} queries)`);
+    }
+  }
+
+  if (results.enrichment) {
+    const e = results.enrichment;
+    if (e.error) {
+      console.log(`Enrichment:     ❌ ${e.error}`);
+    } else {
+      console.log(`Enrichment:     ${e.emailsFound} emails from ${e.hotelsProcessed} hotels`);
+    }
+  }
+
+  if (results.classification) {
+    const c = results.classification;
+    if (c.error) {
+      console.log(`Classification: ❌ ${c.error}`);
+    } else {
+      console.log(`Classification: ${c.classified} contacts classified`);
+    }
+  }
+
+  if (results.sender) {
+    const s = results.sender;
+    if (s.error) {
+      console.log(`Sender:         ❌ ${s.error}`);
+    } else {
+      console.log(`Sender:         ${s.sent} emails sent, ${s.errors} errors`);
+    }
+  }
+
+  console.log('\n═══ Pipeline Complete ═══');
 }
 
 main().catch(err => {
-  console.error('Execution Failed:', err);
+  console.error('\n💥 FATAL ERROR:', err.message);
+  console.error(err.stack);
   process.exit(1);
 });

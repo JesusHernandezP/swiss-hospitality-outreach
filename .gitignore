@@ -1,13 +1,4 @@
-# n8n data (Docker volume)
-n8n_data/
-
-# Environment secrets
+node_modules/
 .env
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
+*.log
+package-lock.json
