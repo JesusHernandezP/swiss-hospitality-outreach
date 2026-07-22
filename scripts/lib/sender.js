@@ -78,23 +78,43 @@ async function sendOutreachEmails(sheets, drive, gmail, options = {}) {
     return { sent: 0, errors: 0 };
   }
 
-  // Read contacts with READY_TO_SEND
+  // Read contacts resiliently (check email property or any column with valid email format)
   const contactRows = await readSheet(sheets, 'CONTACTS');
   const { data: contacts, headerMap: cMap } = parseRows(contactRows);
 
-  let readyContacts = contacts.filter(c =>
-    ['READY_TO_SEND', 'APPROVED'].includes((c.review_status || '').toUpperCase())
-  );
+  // Helper to extract email from a contact row object
+  function getContactEmail(c) {
+    if (c.email && isValidEmail(c.email)) return c.email.trim().toLowerCase();
+    for (const key of Object.keys(c)) {
+      if (key.startsWith('_')) continue;
+      if (isValidEmail(c[key])) return c[key].trim().toLowerCase();
+    }
+    return '';
+  }
+
+  // Filter all candidate contacts that have a valid email
+  const validContacts = contacts.map(c => ({
+    ...c,
+    _extractedEmail: getContactEmail(c)
+  })).filter(c => c._extractedEmail !== '');
+
+  console.log(`  Total contacts with valid emails found in sheet: ${validContacts.length}`);
+
+  // Find contacts ready for outreach (READY_TO_SEND, APPROVED, or fallback un-sent contacts)
+  let readyContacts = validContacts.filter(c => {
+    const st = (c.review_status || c.status || '').toUpperCase();
+    return ['READY_TO_SEND', 'APPROVED'].includes(st);
+  });
 
   if (readyContacts.length === 0) {
-    console.log('  No explicit READY_TO_SEND contacts found. Checking NEEDS_REVIEW contacts for auto-dispatch...');
-    const pending = contacts.filter(c =>
-      ['NEEDS_REVIEW', 'GENERAL', ''].includes((c.review_status || '').toUpperCase()) && c.email
-    );
-    if (pending.length > 0) {
-      readyContacts = pending.slice(0, maxSends);
-      console.log(`  Auto-approved ${readyContacts.length} contacts for immediate outreach.`);
-    }
+    console.log('  No explicit READY_TO_SEND contacts found. Selecting valid pending contacts for auto-dispatch...');
+    // Exclude rejected / do not contact
+    readyContacts = validContacts.filter(c => {
+      const st = (c.review_status || c.status || '').toUpperCase();
+      return !['REJECTED', 'DO_NOT_CONTACT', 'SENT', 'INVALID_EMAIL'].includes(st);
+    }).slice(0, maxSends);
+    
+    console.log(`  Auto-selected ${readyContacts.length} pending contact(s) for dispatch.`);
   }
 
   console.log(`  Contacts ready to process for send: ${readyContacts.length}`);
@@ -112,11 +132,6 @@ async function sendOutreachEmails(sheets, drive, gmail, options = {}) {
       .filter(a => (a.status || '').toUpperCase() === 'SENT')
       .map(a => (a.recipient_email || '').toLowerCase())
   );
-  const sentDomains = new Set(
-    applications
-      .filter(a => (a.status || '').toUpperCase() === 'SENT')
-      .map(a => normalizeDomain(a.recipient_email || ''))
-  );
 
   // Read DO_NOT_CONTACT list
   let doNotContact = new Set();
@@ -126,16 +141,12 @@ async function sendOutreachEmails(sheets, drive, gmail, options = {}) {
     doNotContact = new Set(dncData.map(d => (d.email || d.domain || '').toLowerCase()));
   } catch { /* tab might not exist */ }
 
-  // Filter out already sent, DO_NOT_CONTACT
+  // Filter out already sent & DO_NOT_CONTACT
   const toSend = readyContacts.filter(c => {
-    const email = (c.email || '').toLowerCase();
+    const email = c._extractedEmail;
     const domain = normalizeDomain(email);
     if (sentEmails.has(email)) {
       console.log(`  ⏭ Already sent to ${email} — skipping`);
-      return false;
-    }
-    if (sentDomains.has(domain)) {
-      console.log(`  ⏭ Already sent to domain ${domain} — skipping`);
       return false;
     }
     if (doNotContact.has(email) || doNotContact.has(domain)) {
@@ -206,7 +217,7 @@ async function sendOutreachEmails(sheets, drive, gmail, options = {}) {
   let errorCount = 0;
 
   for (const contact of batch) {
-    const targetEmail = contact.email;
+    const targetEmail = contact._extractedEmail || contact.email;
     console.log(`\n  ✉ ${dryRun ? '[DRY RUN] ' : ''}Sending to: ${targetEmail}`);
 
     try {
