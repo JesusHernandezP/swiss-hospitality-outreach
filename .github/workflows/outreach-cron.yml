@@ -1,0 +1,43 @@
+name: Swiss Hospitality Outreach Automation
+
+on:
+  schedule:
+    # Runs every hour from 07:00 to 17:00 UTC (09:00 to 19:00 Madrid time) Monday through Friday
+    - cron: '0 7-17 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+
+jobs:
+  run-outreach:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          npm install googleapis axios dotenv
+
+      - name: Run Swiss Outreach Runner Script
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ secrets.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_DRIVE_CV_FILE_ID: ${{ secrets.GOOGLE_DRIVE_CV_FILE_ID }}
+          GOOGLE_DRIVE_MOTIVATION_FILE_ID: ${{ secrets.GOOGLE_DRIVE_MOTIVATION_FILE_ID }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          MAX_DAILY_SENDS: ${{ secrets.MAX_DAILY_SENDS || '20' }}
+          DRY_RUN: ${{ secrets.DRY_RUN || 'false' }}
+          OUTREACH_ENABLED: ${{ secrets.OUTREACH_ENABLED || 'true' }}
+          TIMEZONE: 'Europe/Madrid'
+        run: |
+          node scripts/runner.js
