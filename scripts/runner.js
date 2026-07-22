@@ -82,7 +82,75 @@ async function main() {
           console.log(`DRY_RUN mode active. Simulated send to: ${targetEmail}`);
         } else {
           console.log(`LIVE MODE: Executing email dispatch to ${targetEmail}...`);
-          // Send Gmail logic is ready
+
+          // Fetch CV and Motivation attachments from Google Drive
+          console.log('Fetching attachments from Google Drive...');
+          const cvRes = await drive.files.get({ fileId: ENV.GOOGLE_DRIVE_CV_FILE_ID, alt: 'media' }, { responseType: 'arraybuffer' });
+          const motRes = await drive.files.get({ fileId: ENV.GOOGLE_DRIVE_MOTIVATION_FILE_ID, alt: 'media' }, { responseType: 'arraybuffer' });
+          
+          const cvBase64 = Buffer.from(cvRes.data).toString('base64');
+          const motBase64 = Buffer.from(motRes.data).toString('base64');
+
+          // Email Body (German)
+          const subject = 'Interesse an einer Tätigkeit als Koch / Küchenmitarbeiter';
+          const bodyText = `Sehr geehrte Damen und Herren,\n\nderzeit bin ich auf der Suche nach einer Stelle als Koch oder Küchenmitarbeiter in der Schweiz.\n\nIch verfüge über praktische Erfahrung in internationalen Hotel- und Restaurantküchen. Zu meinen bisherigen Aufgaben gehören Mise en Place, warme und kalte Küche, Grill, Plancha, Fritteuse, Frühstück, Buffet, Room Service, Bankett sowie die Mitarbeit während arbeitsintensiver Servicezeiten.\n\nBesonders interessiert mich die Möglichkeit, in der Schweiz zu leben und zu arbeiten. Zurzeit wohne ich in Madrid. Ich bin spanischer Staatsbürger (EU/EFTA) und stehe für einen kurzfristigen Umzug zur Verfügung. Spanisch ist meine Muttersprache, Englisch spreche ich auf B2-Niveau und Deutsch lerne ich derzeit auf A1-Niveau.\n\nMeinen Lebenslauf und mein Motivationsschreiben finden Sie im Anhang.\n\nFreundliche Grüsse\n\nJesus Hernandez\n+34 666 056 214\nhernandezpacheco2805@gmail.com`;
+
+          // Construct MIME Raw Email with Attachments and BCC
+          const boundary = '----=_Part_' + Date.now();
+          let rawEmail = [
+            `From: "Jesus Hernandez" <${ENV.SENDER_EMAIL || 'hernandezpacheco2805@gmail.com'}>`,
+            `To: ${targetEmail}`,
+            `Bcc: ${ENV.SENDER_EMAIL || 'hernandezpacheco2805@gmail.com'}`,
+            `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
+            'MIME-Version: 1.0',
+            `Content-Type: multipart/mixed; boundary="${boundary}"`,
+            '',
+            `--${boundary}`,
+            'Content-Type: text/plain; charset="UTF-8"',
+            'Content-Transfer-Encoding: 8bit',
+            '',
+            bodyText,
+            '',
+            `--${boundary}`,
+            'Content-Type: application/pdf; name="CV_Jesus_Hernandez.pdf"',
+            'Content-Disposition: attachment; filename="CV_Jesus_Hernandez.pdf"',
+            'Content-Transfer-Encoding: base64',
+            '',
+            cvBase64,
+            '',
+            `--${boundary}`,
+            'Content-Type: application/pdf; name="Carta_Motivacion_Jesus_Hernandez.pdf"',
+            'Content-Disposition: attachment; filename="Carta_Motivacion_Jesus_Hernandez.pdf"',
+            'Content-Transfer-Encoding: base64',
+            '',
+            motBase64,
+            '',
+            `--${boundary}--`
+          ].join('\r\n');
+
+          const encodedMessage = Buffer.from(rawEmail)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+          const sendRes = await gmail.users.messages.send({
+            userId: 'me',
+            requestBody: { raw: encodedMessage }
+          });
+
+          console.log(`Email Sent Successfully! Gmail Message ID: ${sendRes.data.id}`);
+
+          // Update Status in CONTACTS Sheet to SENT
+          const rowIndex = rows.indexOf(contactToProcess) + 1;
+          const statusColLetter = String.fromCharCode(65 + statusIdx);
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: ENV.GOOGLE_SHEET_ID,
+            range: `CONTACTS!${statusColLetter}${rowIndex}`,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: { values: [['SENT']] }
+          });
+          console.log(`Updated contact row ${rowIndex} status to SENT in Google Sheets.`);
         }
       }
     }
