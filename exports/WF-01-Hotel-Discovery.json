@@ -72,9 +72,17 @@
     },
     {
       "parameters": {
+        "method": "POST",
         "url": "https://api.apify.com/v2/acts/compass~crawler-google-places/runs",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "apifyApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.APIFY_TOKEN }}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"searchStringsArray\": {{ JSON.stringify($json.searchTerms) }},\n  \"maxCrawledPlacesPerSearch\": 50,\n  \"language\": \"de\",\n  \"countryCode\": \"ch\",\n  \"categoryFilterWords\": [\"hotel\", \"resort\", \"gasthof\", \"berghotel\", \"wellness\"],\n  \"includeWebResults\": false,\n  \"maxImages\": 0,\n  \"maxReviews\": 0,\n  \"scrapeContacts\": true,\n  \"scrapeTableReservation\": false\n}",
@@ -86,19 +94,20 @@
       "name": "Run Apify Google Maps Scraper",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [940, 400],
-      "credentials": {
-        "apifyApi": {
-          "id": "PLACEHOLDER",
-          "name": "Apify API"
-        }
-      }
+      "position": [940, 400]
     },
     {
       "parameters": {
         "url": "=https://api.apify.com/v2/acts/compass~crawler-google-places/runs/{{ $json.data.id }}/dataset/items",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "apifyApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.APIFY_TOKEN }}"
+            }
+          ]
+        },
         "options": {
           "timeout": 60000
         }
@@ -107,13 +116,7 @@
       "name": "Fetch Apify Results",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1160, 400],
-      "credentials": {
-        "apifyApi": {
-          "id": "PLACEHOLDER",
-          "name": "Apify API"
-        }
-      }
+      "position": [1160, 400]
     },
     {
       "parameters": {
