@@ -148,14 +148,23 @@ async function main() {
 
             // Update Status in CONTACTS Sheet to SENT
             const rowIndex = rows.indexOf(contactToProcess) + 1;
-            const statusColLetter = String.fromCharCode(65 + statusIdx);
+            function getColLetter(colIdx) {
+              let temp, letter = '';
+              while (colIdx >= 0) {
+                temp = colIdx % 26;
+                letter = String.fromCharCode(temp + 65) + letter;
+                colIdx = (colIdx - temp) / 26 - 1;
+              }
+              return letter;
+            }
+            const statusColLetter = getColLetter(statusIdx);
             await sheets.spreadsheets.values.update({
               spreadsheetId: ENV.GOOGLE_SHEET_ID,
               range: `CONTACTS!${statusColLetter}${rowIndex}`,
               valueInputOption: 'USER_ENTERED',
               requestBody: { values: [['SENT']] }
             });
-            console.log(`Updated contact row ${rowIndex} status to SENT in Google Sheets.`);
+            console.log(`Updated contact row ${rowIndex} status to SENT in Google Sheets (Col ${statusColLetter}).`);
           }
         }
       }
