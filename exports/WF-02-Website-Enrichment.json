@@ -248,7 +248,10 @@
             "hotel_id": "={{ $json.hotel_id }}",
             "status": "={{ $json.status }}",
             "updated_at": "={{ $json.updated_at }}"
-          }
+          },
+          "matchingColumns": [
+            "hotel_id"
+          ]
         },
         "options": {}
       },
