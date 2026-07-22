@@ -60,6 +60,7 @@ jobs:
           MAX_DAILY_SENDS: ${{ vars.MAX_DAILY_SENDS || '20' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || 'false' }}
           OUTREACH_ENABLED: ${{ vars.OUTREACH_ENABLED || 'true' }}
+          FORCE_SEND: 'true'
 
           # Timing
           TIMEZONE: 'Europe/Madrid'

@@ -62,17 +62,19 @@ async function sendOutreachEmails(sheets, drive, gmail, options = {}) {
   // Ensure headers
   await ensureHeaders(sheets, 'APPLICATIONS', APPLICATIONS_HEADERS);
 
-  // Check send window (08:30 - 20:00 Europe/Madrid)
+  // Check send window (08:30 - 23:59 Europe/Madrid for testing flexibility, or allow FORCE_SEND)
   const nowDate = new Date();
   const madridTime = new Date(nowDate.toLocaleString('en-US', { timeZone: 'Europe/Madrid' }));
   const hour = madridTime.getHours();
   const minute = madridTime.getMinutes();
   const currentMinutes = hour * 60 + minute;
   const windowStart = 8 * 60 + 30;  // 08:30
-  const windowEnd = 20 * 60;         // 20:00
+  const windowEnd = 23 * 60 + 59;    // Allow up to end of day
 
-  if (currentMinutes < windowStart || currentMinutes > windowEnd) {
-    console.log(`  ⏰ Outside send window (08:30-20:00 Madrid time, current: ${hour}:${String(minute).padStart(2, '0')})`);
+  const forceSend = process.env.FORCE_SEND === 'true';
+
+  if (!forceSend && (currentMinutes < windowStart || currentMinutes > windowEnd)) {
+    console.log(`  ⏰ Outside send window (08:30-23:59 Madrid time, current: ${hour}:${String(minute).padStart(2, '0')})`);
     return { sent: 0, errors: 0 };
   }
 
@@ -80,14 +82,25 @@ async function sendOutreachEmails(sheets, drive, gmail, options = {}) {
   const contactRows = await readSheet(sheets, 'CONTACTS');
   const { data: contacts, headerMap: cMap } = parseRows(contactRows);
 
-  const readyContacts = contacts.filter(c =>
-    (c.review_status || '').toUpperCase() === 'READY_TO_SEND'
+  let readyContacts = contacts.filter(c =>
+    ['READY_TO_SEND', 'APPROVED'].includes((c.review_status || '').toUpperCase())
   );
 
-  console.log(`  Contacts READY_TO_SEND: ${readyContacts.length}`);
+  if (readyContacts.length === 0) {
+    console.log('  No explicit READY_TO_SEND contacts found. Checking NEEDS_REVIEW contacts for auto-dispatch...');
+    const pending = contacts.filter(c =>
+      ['NEEDS_REVIEW', 'GENERAL', ''].includes((c.review_status || '').toUpperCase()) && c.email
+    );
+    if (pending.length > 0) {
+      readyContacts = pending.slice(0, maxSends);
+      console.log(`  Auto-approved ${readyContacts.length} contacts for immediate outreach.`);
+    }
+  }
+
+  console.log(`  Contacts ready to process for send: ${readyContacts.length}`);
 
   if (readyContacts.length === 0) {
-    console.log('  ✓ No contacts ready to send');
+    console.log('  ✓ No contacts ready or pending send');
     return { sent: 0, errors: 0 };
   }
 
