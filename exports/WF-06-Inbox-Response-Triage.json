@@ -64,7 +64,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const apiResponse = $input.first().json;\nconst meta = $('Prepare Groq').first().json;\n\nlet parsed;\ntry {\n  parsed = JSON.parse(apiResponse.choices[0].message.content);\n} catch(e) {\n  parsed = { classification: 'OTHER', confidence: 0, reason: 'Parse error' };\n}\n\nreturn [{\n  json: {\n    message_id: meta.message_id,\n    sender: meta.sender,\n    subject: meta.subject,\n    classification: parsed.classification,\n    confidence: parsed.confidence,\n    reason: parsed.reason,\n    timestamp: new Date().toISOString()\n  }\n}];"
+        "jsCode": "const apiResponse = $input.first().json;\nconst meta = $('Prepare Groq').first().json;\n\nlet parsed;\ntry {\n  parsed = JSON.parse(apiResponse.choices[0].message.content);\n} catch(e) {\n  parsed = { classification: 'OTHER', confidence: 0, reason: 'Parse error' };\n}\n\nreturn [{\n  json: {\n    event_id: 'reply-' + Date.now(),\n    timestamp: new Date().toISOString(),\n    workflow: 'WF-06 Triage',\n    entity_type: 'EMAIL',\n    entity_id: meta.sender,\n    event_type: parsed.classification || 'OTHER',\n    details_json: JSON.stringify({ subject: meta.subject, reason: parsed.reason, confidence: parsed.confidence })\n  }\n}];"
       },
       "id": "parse-response",
       "name": "Parse Response",
@@ -86,16 +86,7 @@
           "value": "EVENTS"
         },
         "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "event_id": "={{ 'reply-' + Date.now() }}",
-            "timestamp": "={{ $json.timestamp }}",
-            "workflow": "WF-06 Triage",
-            "entity_type": "EMAIL",
-            "entity_id": "={{ $json.sender }}",
-            "event_type": "={{ $json.classification }}",
-            "details_json": "={{ JSON.stringify({ subject: $json.subject, reason: $json.reason }) }}"
-          }
+          "mappingMode": "autoMapInputData"
         },
         "options": {}
       },
