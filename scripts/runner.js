@@ -66,6 +66,7 @@ async function main() {
     });
     const rows = res.data.values || [];
     if (rows.length > 1) {
+      const headers = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
       let statusIdx = headers.indexOf('review_status');
       if (statusIdx === -1) statusIdx = headers.indexOf('status');
       let emailIdx = headers.indexOf('email');
