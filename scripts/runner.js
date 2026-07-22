@@ -66,17 +66,23 @@ async function main() {
     });
     const rows = res.data.values || [];
     if (rows.length > 1) {
-      const headers = rows[0];
-      const statusIdx = headers.indexOf('review_status');
-      const emailIdx = headers.indexOf('email');
-      
-      const readyRows = rows.slice(1).filter(r => r[statusIdx] === 'READY_TO_SEND');
+      let statusIdx = headers.indexOf('review_status');
+      if (statusIdx === -1) statusIdx = headers.indexOf('status');
+      let emailIdx = headers.indexOf('email');
+      if (emailIdx === -1) emailIdx = headers.indexOf('contact_email');
+
+      console.log(`Header Indices - Status Col: ${statusIdx}, Email Col: ${emailIdx}`);
+
+      const readyRows = rows.slice(1).filter(r => {
+        const val = String(r[statusIdx] || '').trim().toUpperCase();
+        return val === 'READY_TO_SEND';
+      });
       console.log(`Contacts ready for send (READY_TO_SEND): ${readyRows.length}`);
       
       const maxSends = parseInt(ENV.MAX_DAILY_SENDS || '20', 10);
       const batchToProcess = readyRows.slice(0, maxSends);
       
-      if (batchToProcess.length > 0 && ENV.OUTREACH_ENABLED === 'true') {
+      if (batchToProcess.length > 0 && String(ENV.OUTREACH_ENABLED).toLowerCase() === 'true') {
         console.log(`Processing batch of ${batchToProcess.length} emails...`);
 
         // Fetch CV and Motivation attachments once
