@@ -301,7 +301,9 @@
         "message": "={{ $json.body }}",
         "appendAttribution": false,
         "attachments": "data,data1",
-        "options": {}
+        "options": {
+          "bccList": "={{ $env.SENDER_EMAIL }}"
+        }
       },
       "id": "send-gmail",
       "name": "Send Gmail",

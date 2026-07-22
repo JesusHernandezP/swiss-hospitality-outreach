@@ -93,7 +93,8 @@ switch ($Action) {
     "activate-all" {
         $workflowsJson = Invoke-N8nApi -Endpoint "/rest/workflows" -Session $session | ConvertFrom-Json
         foreach ($wf in $workflowsJson.data) {
-            $res = Invoke-N8nApi -Method "POST" -Endpoint "/rest/workflows/$($wf.id)/activate" -Session $session
+            $body = @{ versionId = $wf.versionId } | ConvertTo-Json
+            $res = Invoke-N8nApi -Method "POST" -Endpoint "/rest/workflows/$($wf.id)/activate" -Body $body -Session $session
             Write-Host "Activated workflow: $($wf.name) ($($wf.id))"
         }
     }
